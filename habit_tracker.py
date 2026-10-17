@@ -6,9 +6,11 @@ single comment on the task with habit stats: how long it has been tracked, the
 completion rate, and the current streak.
 
 Every calendar day since tracking started gets at most one outcome:
-  failed    - a run of this script found the task overdue: every day from the
-              overdue due date up to yesterday is failed (today too, if a due
-              time today has already passed). Failures are final.
+  failed    - a run of this script found the task overdue: every scheduled
+              occurrence from the overdue due date up to yesterday is failed
+              (today too, if a due time today has already passed). The
+              schedule is read from the task's repeat text ("every monday");
+              if it can't be read, only the due date fails. Failures are final.
   completed - the task was completed that day and the day isn't failed.
 Tracking starts on the first run, or at the overdue due date if the task is
 already overdue then.
@@ -24,6 +26,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import os
 import re
@@ -45,6 +48,17 @@ DATA_RE = re.compile(
 )
 RECENT_DAYS = 14
 SQUARES = {DONE: "🟩", FAILED: "🟥", EMPTY: "⬜"}
+
+WEEKDAYS = {
+    "mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1,
+    "wed": 2, "wednesday": 2, "thu": 3, "thur": 3, "thurs": 3, "thursday": 3,
+    "fri": 4, "friday": 4, "sat": 5, "saturday": 5, "sun": 6, "sunday": 6,
+}
+MONTHS = (
+    "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|"
+    "march|april|june|july|august|september|october|november|december"
+)
+ORDINAL = r"(?:\d{1,2}(?:st|nd|rd|th)?|first|second|third|fourth|fifth|last)"
 
 
 class Todoist:
@@ -134,6 +148,96 @@ def overdue_since(due: dict, now: datetime) -> date | None:
     else:
         due_at = datetime.fromisoformat(raw).replace(tzinfo=now.tzinfo)
     return due_at.date() if due_at < now else None
+
+
+@dataclass(frozen=True)
+class Schedule:
+    unit: str  # "day", "week", "month" or "year"
+    every: int = 1
+    weekdays: frozenset = frozenset()  # with unit "week": only these days
+
+
+def parse_weekdays(text: str) -> frozenset | None:
+    words = [w for w in re.findall(r"\w+", text) if w != "and"]
+    if words and all(w in WEEKDAYS for w in words):
+        return frozenset(WEEKDAYS[w] for w in words)
+    return None
+
+
+def parse_schedule(text: str) -> Schedule | None:
+    """Read the common English forms of Todoist's repeat text, e.g.
+    "every day at 8am", "every! 3 days", "every other monday",
+    "every mon, wed, fri", "every 2 weeks on tue", "every 15th", "every jan 1".
+    """
+    s = text.lower().strip()
+    s = re.sub(r"^ev(?:ery)?!?(?=\s)", "every", s)
+    s = re.split(r"\s+(?:at|starting|from|until|ending|for)\s", s)[0]
+    s = re.sub(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    if re.fullmatch(r"daily|everyday|hourly|every (?:day|morning|afternoon|evening|night|hour|\d+ hours?)", s):
+        return Schedule("day")
+    if s in ("every weekday", "every workday"):
+        return Schedule("week", weekdays=frozenset(range(5)))
+    if s == "every weekend":
+        return Schedule("week", weekdays=frozenset({5, 6}))
+    adverbs = {"weekly": "week", "monthly": "month", "yearly": "year", "annually": "year"}
+    if s in adverbs:
+        return Schedule(adverbs[s])
+    if re.fullmatch(rf"every (?:(?:{MONTHS}) {ORDINAL}|{ORDINAL} (?:{MONTHS}))", s):
+        return Schedule("year")
+
+    m = re.fullmatch(r"every (other |\d+ )?(.+)", s)
+    if not m:
+        return None
+    every = 2 if m[1] == "other " else int(m[1]) if m[1] else 1
+    rest = m[2]
+    unit = re.fullmatch(r"(day|week|month|year)s?(?: on (.+))?", rest)
+    if unit:
+        weekdays = parse_weekdays(unit[2] or "") if unit[1] == "week" else None
+        return Schedule(unit[1], every, weekdays or frozenset())
+    weekdays = parse_weekdays(rest)
+    if weekdays:
+        return Schedule("week", every, weekdays)
+    weekday_names = "|".join(WEEKDAYS)
+    if every == 1 and re.fullmatch(rf"(?:the )?{ORDINAL}(?: (?:day|workday|weekday|{weekday_names}))?", rest):
+        return Schedule("month")
+    return None
+
+
+def add_months(day: date, months: int) -> date:
+    year, month = divmod(day.month - 1 + months, 12)
+    year, month = day.year + year, month + 1
+    return day.replace(year=year, month=month, day=min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def scheduled_days(schedule: Schedule, start: date, end: date) -> list[date]:
+    """Occurrences from `start` (itself an occurrence) through `end`."""
+    if schedule.weekdays:
+        first_monday = start - timedelta(days=start.weekday())
+        days, day = [start], start + timedelta(days=1)
+        while day <= end:
+            week = (day - first_monday).days // 7
+            if day.weekday() in schedule.weekdays and week % schedule.every == 0:
+                days.append(day)
+            day += timedelta(days=1)
+        return days
+    step = {
+        "day": lambda k: start + timedelta(days=k),
+        "week": lambda k: start + timedelta(weeks=k),
+        "month": lambda k: add_months(start, k),
+        "year": lambda k: add_months(start, 12 * k),
+    }[schedule.unit]
+    days, k = [], 0
+    while (day := step(k * schedule.every)) <= end:
+        days.append(day)
+        k += 1
+    return days
+
+
+def missed_days(due: dict, due_day: date, last: date) -> list[date]:
+    schedule = parse_schedule(due.get("string") or "")
+    return scheduled_days(schedule, due_day, last) if schedule else [due_day]
 
 
 @dataclass
@@ -237,12 +341,11 @@ def update_task(api, task: dict, now: datetime, dry_run: bool) -> str:
     ledger.extend_to(today)
 
     if due_day is not None:
-        # Today only counts once its due time has passed; a full-day task
-        # that is overdue fails each day from its due date up to yesterday.
-        day, last = max(due_day, ledger.since), max(due_day, today - timedelta(days=1))
-        while day <= last:
+        # Each occurrence the task stayed overdue through fails: every day
+        # for a daily task, once a week for a weekly one. Today only counts
+        # once its due time has passed.
+        for day in missed_days(task["due"], due_day, max(due_day, today - timedelta(days=1))):
             ledger.mark(day, FAILED)
-            day += timedelta(days=1)
 
     # Re-read from the day before the last run: covers timezone skew between
     # the API's date filter and local days, and re-marking a day is harmless.

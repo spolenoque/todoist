@@ -2,7 +2,17 @@ import unittest
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from habit_tracker import DATA_RE, Ledger, Todoist, compute_stats, overdue_since, run
+from habit_tracker import (
+    DATA_RE,
+    Ledger,
+    Schedule,
+    Todoist,
+    compute_stats,
+    overdue_since,
+    parse_schedule,
+    run,
+    scheduled_days,
+)
 
 TZ = ZoneInfo("Europe/Warsaw")
 
@@ -46,13 +56,17 @@ class FakeTodoist:
         return Ledger.parse(self.comment_store[task_id][-1]["content"])
 
 
-def habit(due: str, task_id="1", labels=("track",), recurring=True):
+def habit(due: str, task_id="1", labels=("track",), recurring=True, every="every day"):
     return {
         "id": task_id,
         "content": f"habit {task_id}",
         "labels": list(labels),
-        "due": {"date": due, "is_recurring": recurring, "string": "every day"},
+        "due": {"date": due, "is_recurring": recurring, "string": every},
     }
+
+
+def days(*isos):
+    return [date.fromisoformat(d) for d in isos]
 
 
 class OverdueTest(unittest.TestCase):
@@ -71,6 +85,57 @@ class OverdueTest(unittest.TestCase):
         now = at("2026-10-16", 10)
         due = {"date": "2026-10-15T23:30:00.000000Z"}
         self.assertEqual(overdue_since(due, now), date(2026, 10, 16))
+
+
+class ScheduleTest(unittest.TestCase):
+    def test_parse(self):
+        cases = {
+            "every day at 8pm": Schedule("day"),
+            "every! 3 days": Schedule("day", 3),
+            "every other day": Schedule("day", 2),
+            "every week": Schedule("week"),
+            "every monday": Schedule("week", 1, frozenset({0})),
+            "every mon, wed, fri 7am": Schedule("week", 1, frozenset({0, 2, 4})),
+            "every other monday": Schedule("week", 2, frozenset({0})),
+            "every 2 weeks on tue and thu": Schedule("week", 2, frozenset({1, 3})),
+            "every weekday": Schedule("week", 1, frozenset(range(5))),
+            "every 15th": Schedule("month"),
+            "every 2nd monday": Schedule("month"),
+            "every 3 months": Schedule("month", 3),
+            "every jan 1": Schedule("year"),
+            "every day starting oct 1": Schedule("day"),
+            "every 2nd tuesday of the quarter": None,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text):
+                self.assertEqual(parse_schedule(text), expected)
+
+    def test_weekly_overdue_for_a_few_days_is_one_occurrence(self):
+        weekly = parse_schedule("every monday")
+        self.assertEqual(scheduled_days(weekly, *days("2026-10-12", "2026-10-15")), days("2026-10-12"))
+        self.assertEqual(
+            scheduled_days(weekly, *days("2026-10-12", "2026-10-19")), days("2026-10-12", "2026-10-19")
+        )
+
+    def test_weekday_sets_and_intervals(self):
+        self.assertEqual(
+            scheduled_days(parse_schedule("every mon, thu"), *days("2026-10-12", "2026-10-18")),
+            days("2026-10-12", "2026-10-15"),
+        )
+        self.assertEqual(
+            scheduled_days(parse_schedule("every other monday"), *days("2026-10-12", "2026-11-02")),
+            days("2026-10-12", "2026-10-26"),
+        )
+        self.assertEqual(
+            scheduled_days(parse_schedule("every weekday"), *days("2026-10-16", "2026-10-20")),
+            days("2026-10-16", "2026-10-19", "2026-10-20"),
+        )
+
+    def test_monthly_clamps_to_month_end(self):
+        self.assertEqual(
+            scheduled_days(parse_schedule("every 31st"), *days("2026-01-31", "2026-03-31")),
+            days("2026-01-31", "2026-02-28", "2026-03-31"),
+        )
 
 
 class StatsTest(unittest.TestCase):
@@ -141,6 +206,21 @@ class RunTest(unittest.TestCase):
         # No runs for three days, task never done: next run backfills failures.
         run(api, "track", at("2026-10-20"))
         self.assertEqual(api.ledger("1").log, "----.")
+
+    def test_weekly_habit_missed_then_done_late(self):
+        task = habit("2026-10-12", every="every monday")
+        api = FakeTodoist([task])
+        for night in ("2026-10-13", "2026-10-14", "2026-10-15"):
+            run(api, "track", at(night, 1))
+        api.complete("1", at("2026-10-15", 18))  # done on Thursday
+        task["due"]["date"] = "2026-10-19"
+        run(api, "track", at("2026-10-16", 1))
+        self.assertEqual(api.ledger("1").log, "-..+.")
+
+    def test_unreadable_schedule_fails_only_the_due_date(self):
+        api = FakeTodoist([habit("2026-10-12", every="every 2nd tuesday of the quarter")])
+        run(api, "track", at("2026-10-16"))
+        self.assertEqual(api.ledger("1").log, "-....")
 
     def test_failure_is_final(self):
         task = habit("2026-10-16T08:00:00")

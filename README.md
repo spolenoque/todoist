@@ -36,8 +36,9 @@ Todoist account settings.
 
 Each calendar day since tracking started gets at most one outcome:
 
-- **failed**: a run of the script found the task overdue. Every day from the
-  overdue due date up to yesterday is failed. Today is failed too if the task
+- **failed**: a run of the script found the task overdue. Every scheduled
+  occurrence from the overdue due date up to yesterday is failed: each day for
+  a daily task, once a week for a weekly one. Today is failed too if the task
   had a due time today that has passed. Failures are final: completing the
   task late doesn't undo them.
 - **completed**: the task was completed that day, and the day isn't failed.
@@ -45,7 +46,16 @@ Each calendar day since tracking started gets at most one outcome:
   don't break streaks.
 
 So a task due yesterday that you complete this morning gives yesterday 🟥 if
-the script ran before you completed it, and today 🟩. Tracking starts on the
+the script ran before you completed it, and today 🟩. A task due every Monday
+that you complete on Thursday gives Monday 🟥 and Thursday 🟩. It gets a
+second 🟥 only if it is still overdue the following Monday.
+
+The schedule comes from the task's repeat text. The script understands the
+common English forms: `every day`, `every other day`, `every 3 days`,
+`every monday`, `every mon, wed, fri`, `every other monday`,
+`every 2 weeks on tue`, `every weekday`, `every 15th`, `every 2nd monday`,
+`every 3 months`, `every jan 1`. Times and `starting`/`until` parts are
+ignored. If it can't read the repeat text, only the overdue due date fails. Tracking starts on the
 first run that sees the task, or at its due date if it's already overdue by
 then. Completions from before tracking started are ignored.
 
