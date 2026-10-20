@@ -10,6 +10,7 @@ from habit_tracker import (
     compute_stats,
     overdue_since,
     parse_schedule,
+    render,
     run,
     scheduled_days,
 )
@@ -141,13 +142,20 @@ class ScheduleTest(unittest.TestCase):
 class StatsTest(unittest.TestCase):
     def test_streaks_ignore_empty_days(self):
         s = compute_stats(Ledger(date(2026, 10, 1), date(2026, 10, 9), "++-+.+.+."))
-        self.assertEqual((s.days_tracked, s.completed, s.failed), (9, 5, 1))
+        self.assertEqual((s.completed, s.failed), (5, 1))
         self.assertEqual((s.streak, s.streak_kind, s.best_streak), (3, "+", 3))
         self.assertEqual(s.rate, 83)
 
     def test_failed_streak(self):
         s = compute_stats(Ledger(date(2026, 10, 1), date(2026, 10, 4), "+--."))
         self.assertEqual((s.streak, s.streak_kind, s.best_streak), (2, "-", 1))
+
+    def test_render_shows_last_ten_results_without_empty_days(self):
+        ledger = Ledger(date(2026, 10, 1), date(2026, 10, 15), "+-.+++.+-+.++--")
+        content = render(ledger, at("2026-10-15"))
+        self.assertIn("Last 10 results: 🟩🟩🟩🟩🟥🟩🟩🟩🟥🟥\n", content)
+        self.assertIn("Current streak: **2 fails** ❌", content)
+        self.assertIn("Best streak: 4 completions", content)
 
     def test_no_outcomes(self):
         s = compute_stats(Ledger(date(2026, 10, 1), date(2026, 10, 1), "."))
@@ -195,9 +203,11 @@ class RunTest(unittest.TestCase):
         self.assertEqual(api.ledger("1").log, "+-+.")
         self.assertEqual(len(api.comment_store["1"]), 1)  # updated in place, not re-added
         content = api.comment_store["1"][0]["content"]
-        self.assertIn("Tracking for: **4 days**", content)
+        self.assertIn("Tracking since: **16 Oct 2026**", content)
         self.assertIn("**67%** (2 completed / 1 failed)", content)
-        self.assertIn("Current streak: **1 day completed**", content)
+        self.assertIn("Current streak: **1 completion** 🔥", content)
+        self.assertIn("Best streak: 1 completion", content)
+        self.assertIn("Last 10 results: 🟩🟥🟩", content)
 
     def test_missed_runs_leave_gaps_and_overdue_fills_them(self):
         task = habit("2026-10-16")

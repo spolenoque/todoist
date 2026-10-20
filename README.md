@@ -5,11 +5,11 @@ Habit tracker for Todoist. For every **recurring** task with the `@track` label,
 
 ```
 📊 Habit stats
-Tracking for: 24 days (since 23 Sep 2026)
+Tracking since: 23 Sep 2026
 Completion rate: 87% (20 completed / 3 failed)
-Current streak: 5 days completed 🔥
-Best streak: 9 days completed
-Last 14 days: 🟩🟩🟥🟩⬜🟩🟩🟩🟩🟩⬜🟩🟩🟩
+Current streak: 5 completions 🔥
+Best streak: 9 completions
+Last 10 results: 🟩🟩🟥🟩🟩🟩🟩🟩🟩🟩
 Updated 16 Oct 2026 07:00  `habit-tracker:v1:2026-09-23:2026-10-16:++-+.+…`
 ```
 

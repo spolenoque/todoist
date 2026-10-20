@@ -46,8 +46,8 @@ DONE, FAILED, EMPTY = "+", "-", "."
 DATA_RE = re.compile(
     r"`habit-tracker:v1:(\d{4}-\d{2}-\d{2}):(\d{4}-\d{2}-\d{2}):([+.\-]*)`"
 )
-RECENT_DAYS = 14
-SQUARES = {DONE: "🟩", FAILED: "🟥", EMPTY: "⬜"}
+RECENT_RESULTS = 10
+SQUARES = {DONE: "🟩", FAILED: "🟥"}
 
 WEEKDAYS = {
     "mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1,
@@ -271,7 +271,6 @@ class Ledger:
 
 @dataclass
 class Stats:
-    days_tracked: int
     completed: int
     failed: int
     streak: int
@@ -290,7 +289,6 @@ def compute_stats(ledger: Ledger) -> Stats:
     streak = len(outcomes) - len(outcomes.rstrip(streak_kind)) if streak_kind else 0
     best = max((len(run) for run in re.findall(r"\++", outcomes)), default=0)
     return Stats(
-        days_tracked=len(ledger.log),
         completed=outcomes.count(DONE),
         failed=outcomes.count(FAILED),
         streak=streak,
@@ -310,20 +308,21 @@ def render(ledger: Ledger, now: datetime) -> str:
     else:
         rate = f"**{s.rate}%** ({s.completed} completed / {s.failed} failed)"
     if s.streak_kind == DONE:
-        streak = f"**{plural(s.streak, 'day')} completed** 🔥"
+        streak = f"**{plural(s.streak, 'completion')}** 🔥"
     elif s.streak_kind == FAILED:
-        streak = f"**{plural(s.streak, 'day')} failed** ❌"
+        streak = f"**{plural(s.streak, 'fail')}** ❌"
     else:
         streak = "—"
-    recent = "".join(SQUARES[c] for c in ledger.log[-RECENT_DAYS:])
+    outcomes = ledger.log.replace(EMPTY, "")
+    recent = "".join(SQUARES[c] for c in outcomes[-RECENT_RESULTS:]) or "—"
     return "\n".join(
         [
             "📊 **Habit stats**",
-            f"Tracking for: **{plural(s.days_tracked, 'day')}** (since {ledger.since:%d %b %Y})",
+            f"Tracking since: **{ledger.since:%d %b %Y}**",
             f"Completion rate: {rate}",
             f"Current streak: {streak}",
-            f"Best streak: {plural(s.best_streak, 'day')} completed",
-            f"Last {RECENT_DAYS} days: {recent}",
+            f"Best streak: {plural(s.best_streak, 'completion')}",
+            f"Last {RECENT_RESULTS} results: {recent}",
             f"_Updated {now:%d %b %Y %H:%M}_ {ledger.serialize()}",
         ]
     )
