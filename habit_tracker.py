@@ -10,16 +10,19 @@ scheduled for:
   completed - done on that day, or earlier.
   late      - done after that day, but before the next occurrence's day.
   failed    - the next occurrence's day arrived and it still wasn't done.
-Postponing a task doesn't change the day it was scheduled for. Occurrence days
-come from the task's repeat text ("every monday"); if the script can't read
-it, an occurrence fails the day after it was due and there is no late.
+Postponing a task doesn't change the day it was scheduled for. Moving it back
+to the day it was last completed, or earlier (which is also what undoing a
+completion in Todoist does), takes that completion back. Occurrence days come
+from the task's repeat text ("every monday"); if the script can't read it, an
+occurrence fails the day after it was due and there is no late.
 
 Todoist doesn't record which occurrence is still open, so the per-day results,
-the open occurrence and the time of the last check are stored in the stats
-comment itself (the last line). Run the script at least once a day.
+the open occurrence, the time of the last check and the day of the last
+completion are stored in the stats comment itself (the last line). Run the
+script at least once a day.
 
 Usage:
-  TODOIST_API_TOKEN=... python3 habit_tracker.py [--dry-run] [--label track]
+  TODOIST_API_TOKEN=... python3 habit_tracker.py [--dry-run] [--label track] [--task ID_OR_LINK]
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 API_URL = "https://api.todoist.com/api/v1"
@@ -44,7 +48,8 @@ API_URL = "https://api.todoist.com/api/v1"
 DONE, LATE, FAILED, EMPTY = "+", "~", "-", "."
 DATE = r"\d{4}-\d{2}-\d{2}"
 MARKER_RE = re.compile(r"`habit-tracker:v\d:")
-DATA_RE = re.compile(rf"`habit-tracker:v3:({DATE}):({DATE}|-):(\d+):([+~.\-]*)`")
+# v3 had no last-completion field.
+DATA_RE = re.compile(rf"`habit-tracker:v[34]:({DATE}):({DATE}|-):(\d+):(?:({DATE}|-):)?([+~.\-]*)`")
 # Written by the first version, before late results existed.
 V1_RE = re.compile(rf"`habit-tracker:v1:({DATE}):({DATE}):([+.\-]*)`")
 UPDATED_RE = re.compile(r"_Updated (\d{1,2} \w{3} \d{4} \d{2}:\d{2})_")
@@ -75,6 +80,15 @@ MONTHS = {
 ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "last": -1}
 ALL_DAYS = frozenset(range(7))
 WORKDAYS = frozenset(range(5))
+
+
+class Event(NamedTuple):
+    """Something done to a task, from the activity log."""
+
+    at: datetime  # UTC
+    kind: str  # "completed", "uncompleted" (undone in Todoist) or "moved" (new due date)
+    occurrence: date | None = None  # completed: local day the completed occurrence was due
+    due_at: datetime | None = None  # completed: the next due time; moved: the new one
 
 
 class Todoist:
@@ -118,32 +132,35 @@ class Todoist:
     def tasks_with_label(self, label: str) -> list[dict]:
         return list(self._paginate("tasks", {"label": label, "limit": 200}))
 
-    def completions(self, task_id: str, since: date) -> list[tuple[datetime, date | None, datetime | None]]:
-        """(completed at, local day the completed occurrence was due, next due
-        time) for each completion of the task on or after `since`."""
+    def task(self, task_id: str) -> dict:
+        return self._request("GET", f"tasks/{task_id}")
+
+    def events(self, task_id: str, since: date) -> list[Event]:
+        """Completions, undone completions and due date changes of the task
+        on or after `since`."""
         # Recurring completions are not returned by /tasks/completed/*; they
         # only show up in the activity log as item:completed events.
         params = {
             "object_id": task_id,
-            "object_event_types": json.dumps(["item:completed"]),
+            "object_event_types": json.dumps(["item:completed", "item:uncompleted", "item:updated"]),
             "date_from": since.isoformat(),
             "limit": 100,
         }
         result = []
         # The API doesn't reliably apply object_id, so filter here as well.
         for e in self._paginate("activities", params):
-            if e.get("object_id") != task_id or e.get("event_type") != "completed":
+            if e.get("object_id") != task_id:
                 continue
             extra = e.get("extra_data") or {}
-            occurrence = extra.get("completed_due_date_local")
-            next_due = extra.get("due_date")
-            result.append(
-                (
-                    parse_utc(e["event_date"]),
-                    date.fromisoformat(occurrence[:10]) if occurrence else None,
-                    parse_utc(next_due) if next_due else None,
-                )
-            )
+            due_at = parse_utc(extra["due_date"]) if extra.get("due_date") else None
+            at = parse_utc(e["event_date"])
+            if e.get("event_type") == "completed":
+                occurrence = extra.get("completed_due_date_local")
+                result.append(Event(at, "completed", date.fromisoformat(occurrence[:10]) if occurrence else None, due_at))
+            elif e.get("event_type") == "uncompleted":
+                result.append(Event(at, "uncompleted"))
+            elif e.get("event_type") == "updated" and due_at:  # other edits carry no due date
+                result.append(Event(at, "moved", due_at=due_at))
         return result
 
     def comments(self, task_id: str) -> list[dict]:
@@ -207,6 +224,12 @@ class Schedule:
     every: int = 1
     weekdays: frozenset = frozenset()
     rules: tuple = ()
+
+    @property
+    def on_calendar(self) -> bool:
+        """Falls on set calendar days rather than counting from the last
+        occurrence, so postponing the task doesn't shift later occurrences."""
+        return self.unit == "nth" or bool(self.weekdays) or (self.unit == "day" and self.every == 1)
 
     def after(self, day: date) -> date | None:
         """The first occurrence after `day`."""
@@ -284,7 +307,9 @@ def parse_schedule(text: str) -> Schedule | None:
     s = re.sub(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b", "", s)
     s = re.sub(r"\s+", " ", s).strip()
 
-    if re.fullmatch(r"daily|everyday|hourly|every (?:day|morning|afternoon|evening|night|hour|\d+ hours?)", s):
+    # Hourly repeats ("every 12 hours") are left unread: several occurrences a
+    # day don't fit one result per day.
+    if re.fullmatch(r"daily|everyday|every (?:day|morning|afternoon|evening|night)", s):
         return Schedule("day")
     if s in ("every weekday", "every workday"):
         return Schedule("week", weekdays=WORKDAYS)
@@ -319,12 +344,15 @@ class Ledger:
     pending: date | None  # day the oldest open occurrence was scheduled for
     checked: datetime  # completions up to this moment have been counted
     log: str  # one result per day from `since`; may run into the future
+    last_done: date | None = None  # day the last counted completion happened
 
     @classmethod
     def parse(cls, text: str, tz: tzinfo) -> Ledger | None:
         if m := DATA_RE.search(text):
             pending = date.fromisoformat(m[2]) if m[2] != "-" else None
-            return cls(date.fromisoformat(m[1]), pending, datetime.fromtimestamp(int(m[3]), timezone.utc), m[4])
+            last_done = date.fromisoformat(m[4]) if m[4] and m[4] != "-" else None
+            checked = datetime.fromtimestamp(int(m[3]), timezone.utc)
+            return cls(date.fromisoformat(m[1]), pending, checked, m[5], last_done)
         if m := V1_RE.search(text):
             updated = UPDATED_RE.search(text)
             if updated:
@@ -336,7 +364,8 @@ class Ledger:
 
     def serialize(self) -> str:
         checked = int(self.checked.timestamp())
-        return f"`habit-tracker:v3:{self.since}:{self.pending or '-'}:{checked}:{self.log}`"
+        last_done = self.last_done or "-"
+        return f"`habit-tracker:v4:{self.since}:{self.pending or '-'}:{checked}:{last_done}:{self.log}`"
 
     def extend_to(self, day: date):
         self.log = self.log.ljust((day - self.since).days + 1, EMPTY)
@@ -365,8 +394,29 @@ class Ledger:
         self.fail_missed(schedule, done_on)
         if self.pending is not None:
             self.mark(self.pending, DONE if done_on <= self.pending else LATE)
-            next_due = next_due or (schedule.after(self.pending) if schedule else None)
+            self.last_done = done_on
+            if schedule and schedule.on_calendar:
+                # Todoist's next date skips an occurrence when the task was
+                # postponed past it before being done; the calendar doesn't.
+                next_due = schedule.after(self.pending) or next_due
+            else:
+                next_due = next_due or (schedule.after(self.pending) if schedule else None)
         self.pending = next_due
+
+    def take_back(self, moved_to: date | None = None):
+        """Undoing the last completion in Todoist (`moved_to` None), or moving
+        the task back to the day of that completion or earlier, takes it back:
+        its occurrence is open again. Moving a later occurrence earlier, to a
+        day after the last completion, doesn't."""
+        if self.pending is None or self.last_done is None:
+            return
+        if moved_to is not None and (moved_to > self.last_done or moved_to >= self.pending):
+            return
+        results = self.log.rstrip(EMPTY)
+        if results and results[-1] in (DONE, LATE):  # nothing settled since
+            day = self.since + timedelta(days=len(results) - 1)
+            self.log = results[:-1] + EMPTY + self.log[len(results) :]
+            self.pending, self.last_done = day, None
 
 
 @dataclass
@@ -443,19 +493,24 @@ def update_task(api, task: dict, now: datetime, dry_run: bool) -> str:
         ledger = Ledger(since=since, pending=None, checked=local_midnight(since, tz), log="")
     ledger.extend_to(today)
 
+    # Replay what happened since the last check, in order: a completion can
+    # be taken back and the task moved again before the next run.
     until = now - SETTLE_TIME
     fetch_from = ledger.checked.astimezone(timezone.utc).date() - timedelta(days=1)
-    new = sorted(
-        (c for c in api.completions(task["id"], fetch_from) if ledger.checked < c[0] <= until),
-        key=lambda c: c[0],
-    )
+    events = sorted((e for e in api.events(task["id"], fetch_from) if ledger.checked < e.at <= until), key=lambda e: e.at)
     if ledger.pending is None:
         # New tracking, an older comment, or a schedule the script can't
         # read: start from the occurrence Todoist has open.
-        ledger.pending = (new and new[0][1]) or due
-    for completed_at, _, next_due_at in new:
-        next_due = next_due_at.astimezone(tz).date() if next_due_at else None
-        ledger.complete(schedule, completed_at.astimezone(tz).date(), next_due)
+        first = next((e for e in events if e.kind == "completed"), None)
+        ledger.pending = (first and first.occurrence) or due
+    for e in events:
+        due_on = e.due_at.astimezone(tz).date() if e.due_at else None
+        if e.kind == "completed":
+            ledger.complete(schedule, e.at.astimezone(tz).date(), due_on)
+        elif e.kind == "uncompleted":
+            ledger.take_back()
+        else:
+            ledger.take_back(moved_to=due_on)
     ledger.fail_missed(schedule, today)
     ledger.checked = max(ledger.checked, until)
 
@@ -469,8 +524,26 @@ def update_task(api, task: dict, now: datetime, dry_run: bool) -> str:
     return content
 
 
-def run(api, label: str, now: datetime, dry_run: bool = False) -> int:
-    tasks = [t for t in api.tasks_with_label(label) if (t.get("due") or {}).get("is_recurring")]
+def is_tracked(task: dict, label: str) -> bool:
+    labels = {name.lower() for name in task.get("labels") or []}
+    return label.lower() in labels and bool((task.get("due") or {}).get("is_recurring"))
+
+
+def task_id_from(value: str) -> str:
+    """A task ID, or the ID at the end of a task link (…/app/task/some-title-ID)."""
+    path = urllib.parse.urlparse(value.strip()).path
+    return path.rstrip("/").rsplit("/", 1)[-1].rsplit("-", 1)[-1]
+
+
+def run(api, label: str, now: datetime, dry_run: bool = False, task_id: str | None = None) -> int:
+    if task_id:
+        task = api.task(task_id)
+        if not is_tracked(task, label):
+            print(f"error: {task['content']} ({task_id}) is not a recurring @{label} task", file=sys.stderr)
+            return 1
+        tasks = [task]
+    else:
+        tasks = [t for t in api.tasks_with_label(label) if is_tracked(t, label)]
     errors = 0
     for task in tasks:
         try:
@@ -505,6 +578,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--label", default=os.environ.get("HABIT_LABEL", "track"))
     parser.add_argument("--dry-run", action="store_true", help="print comments instead of writing them")
+    parser.add_argument("--task", metavar="ID_OR_LINK", help="update only this task (its ID or Todoist link)")
     args = parser.parse_args()
 
     token = os.environ.get("TODOIST_API_TOKEN")
@@ -514,7 +588,7 @@ def main() -> int:
     api = Todoist(token)
     try:
         now = datetime.now(resolve_timezone(api))
-        return run(api, args.label, now, args.dry_run)
+        return run(api, args.label, now, args.dry_run, task_id_from(args.task) if args.task else None)
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1

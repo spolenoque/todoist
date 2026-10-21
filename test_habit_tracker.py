@@ -1,11 +1,15 @@
+import contextlib
+import io
+import random
 import unittest
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from habit_tracker import (
     ALL_DAYS,
     DATA_RE,
     WORKDAYS,
+    Event,
     Ledger,
     Schedule,
     Todoist,
@@ -14,6 +18,7 @@ from habit_tracker import (
     parse_schedule,
     render,
     run,
+    task_id_from,
 )
 
 TZ = ZoneInfo("Europe/Warsaw")
@@ -28,18 +33,30 @@ def d(iso: str) -> date:
     return date.fromisoformat(iso)
 
 
+def due_time(value: str) -> datetime:
+    """UTC time of a due date ("2026-10-21") or local due time ("2026-10-21T20:00:00")."""
+    local = datetime.fromisoformat(value).replace(tzinfo=TZ) if "T" in value else at(value, 12)
+    return local.astimezone(timezone.utc)
+
+
 class FakeTodoist:
     def __init__(self, tasks):
         self.tasks = tasks
-        self.done = {}  # task_id -> [(utc time, occurrence day, next due utc time)]
+        self.history = {}  # task_id -> [Event]
         self.comment_store = {}  # task_id -> [comment]
         self.writes = 0
 
     def tasks_with_label(self, label):
         return [t for t in self.tasks if label in t.get("labels", [])]
 
-    def completions(self, task_id, since):
-        return [c for c in self.done.get(task_id, []) if c[0].date() >= since]
+    def task(self, task_id):
+        for t in self.tasks:
+            if t["id"] == task_id:
+                return t
+        raise RuntimeError(f"GET tasks/{task_id} -> HTTP 404")
+
+    def events(self, task_id, since):
+        return [e for e in self.history.get(task_id, []) if e.at.date() >= since]
 
     def comments(self, task_id):
         return self.comment_store.get(task_id, [])
@@ -59,9 +76,20 @@ class FakeTodoist:
     def complete(self, task, local_dt: datetime, next_due: str):
         """Complete the open occurrence; like Todoist, move the task to `next_due`."""
         occurrence = d(task["due"]["date"][:10])
-        next_at = at(next_due, 12).astimezone(timezone.utc)
-        self.done.setdefault(task["id"], []).append((local_dt.astimezone(timezone.utc), occurrence, next_at))
+        self.log_event(task, Event(local_dt.astimezone(timezone.utc), "completed", occurrence, due_time(next_due)))
         task["due"]["date"] = next_due
+
+    def move(self, task, local_dt: datetime, new_due: str):
+        self.log_event(task, Event(local_dt.astimezone(timezone.utc), "moved", due_at=due_time(new_due)))
+        task["due"]["date"] = new_due
+
+    def undo(self, task, local_dt: datetime, restored_due: str):
+        """Todoist's undo of a completion, which puts the old due date back."""
+        self.log_event(task, Event(local_dt.astimezone(timezone.utc), "uncompleted"))
+        task["due"]["date"] = restored_due
+
+    def log_event(self, task, event):
+        self.history.setdefault(task["id"], []).append(event)
 
     def ledger(self, task_id) -> Ledger:
         return Ledger.parse(self.comment_store[task_id][-1]["content"], TZ)
@@ -109,6 +137,8 @@ class ScheduleTest(unittest.TestCase):
             "every jan 1": Schedule("nth", rules=((1, ALL_DAYS, 1),)),
             "every last Sun Feb, last Sun Apr": Schedule("nth", rules=((-1, sunday, 2), (-1, sunday, 4))),
             "every day starting oct 1": Schedule("day"),
+            "every 12 hours": None,
+            "hourly": None,
             "every 2nd tuesday of the quarter": None,
         }
         for text, expected in cases.items():
@@ -210,7 +240,7 @@ class OccurrenceTest(unittest.TestCase):
         task = habit("2026-10-21")
         api = FakeTodoist([task])
         run(api, "track", at("2026-10-21", 1))
-        task["due"]["date"] = "2026-10-22"
+        api.move(task, at("2026-10-21", 12), "2026-10-22")
         run(api, "track", at("2026-10-22", 1))
         self.assertEqual(api.log("1"), "-.")
         api.complete(task, at("2026-10-22", 20), "2026-10-23")
@@ -221,7 +251,7 @@ class OccurrenceTest(unittest.TestCase):
         task = habit("2026-10-21")
         api = FakeTodoist([task])
         run(api, "track", at("2026-10-21", 1))
-        task["due"]["date"] = "2026-10-21T20:00:00"
+        api.move(task, at("2026-10-21", 12), "2026-10-21T20:00:00")
         api.complete(task, at("2026-10-21", 21), "2026-10-22")
         run(api, "track", at("2026-10-22", 1))
         self.assertEqual(api.log("1"), "+.")
@@ -230,7 +260,7 @@ class OccurrenceTest(unittest.TestCase):
         task = habit("2026-10-25", every="every sunday")
         api = FakeTodoist([task])
         run(api, "track", at("2026-10-25", 1))
-        task["due"]["date"] = "2026-10-27"
+        api.move(task, at("2026-10-25", 12), "2026-10-27")
         api.complete(task, at("2026-10-27", 10), "2026-11-01")
         run(api, "track", at("2026-10-28", 1))
         self.assertEqual(api.log("1"), "~...")
@@ -239,7 +269,7 @@ class OccurrenceTest(unittest.TestCase):
         task = habit("2026-10-21", every="every 2 days")
         api = FakeTodoist([task])
         run(api, "track", at("2026-10-21", 1))
-        task["due"]["date"] = "2026-10-22"
+        api.move(task, at("2026-10-21", 12), "2026-10-22")
         api.complete(task, at("2026-10-22", 10), "2026-10-24")
         run(api, "track", at("2026-10-23", 1))
         self.assertEqual(api.log("1"), "~..")
@@ -249,7 +279,7 @@ class OccurrenceTest(unittest.TestCase):
         task = habit("2026-10-21")
         api = FakeTodoist([task])
         run(api, "track", at("2026-10-21", 1))
-        task["due"]["date"] = "2026-10-24"
+        api.move(task, at("2026-10-21", 12), "2026-10-24")
         for night in ("2026-10-22", "2026-10-23", "2026-10-24"):
             run(api, "track", at(night, 1))
         self.assertEqual(api.log("1"), "---.")
@@ -258,7 +288,7 @@ class OccurrenceTest(unittest.TestCase):
         task = habit("2026-10-25", every="every sunday")
         api = FakeTodoist([task])
         run(api, "track", at("2026-10-21", 1))
-        task["due"]["date"] = "2026-10-24"  # moved to Saturday ahead of time
+        api.move(task, at("2026-10-22", 12), "2026-10-24")  # moved to Saturday ahead of time
         api.complete(task, at("2026-10-24", 10), "2026-11-01")
         run(api, "track", at("2026-10-26", 1))
         self.assertEqual(api.log("1"), "....+.")
@@ -326,37 +356,259 @@ class RunTest(unittest.TestCase):
         run(api, "track", at("2026-10-22", 1))
         self.assertEqual(api.comment_store["1"][0]["content"], "my own note")
         self.assertEqual(api.log("1"), "-+.")
-        self.assertIn("`habit-tracker:v3:", api.comment_store["1"][1]["content"])
+        self.assertIn("`habit-tracker:v4:", api.comment_store["1"][1]["content"])
+
+    def test_single_task_run_updates_only_that_task(self):
+        api = FakeTodoist([habit("2026-10-16", "1"), habit("2026-10-16", "2")])
+        self.assertEqual(run(api, "track", at("2026-10-16"), task_id="2"), 0)
+        self.assertEqual(list(api.comment_store), ["2"])
+
+    def test_single_task_run_refuses_untracked_tasks(self):
+        api = FakeTodoist([habit("2026-10-16", "1", labels=()), habit("2026-10-16", "2", recurring=False)])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(run(api, "track", at("2026-10-16"), task_id="1"), 1)
+            self.assertEqual(run(api, "track", at("2026-10-16"), task_id="2"), 1)
+        self.assertEqual(api.comment_store, {})
+
+    def test_task_id_from_id_or_link(self):
+        for value in (
+            "6h3wcWJ666fWX7rg",
+            "https://app.todoist.com/app/task/vchera-bez-sladkogo-6h3wcWJ666fWX7rg",
+            "https://app.todoist.com/app/task/vchera-bez-sladkogo-6h3wcWJ666fWX7rg/",
+            "https://app.todoist.com/app/task/6h3wcWJ666fWX7rg?view=comments",
+        ):
+            with self.subTest(value):
+                self.assertEqual(task_id_from(value), "6h3wcWJ666fWX7rg")
 
     def test_dry_run_writes_nothing(self):
         api = FakeTodoist([habit("2026-10-16")])
         run(api, "track", at("2026-10-16"), dry_run=True)
         self.assertEqual(api.writes, 0)
 
-    def test_completions_of_other_tasks_are_ignored(self):
+    def test_reads_activity_events(self):
         api = Todoist("token")
-        extra = {"completed_due_date_local": "2026-10-16T23:59:59", "due_date": "2026-10-17T21:59:59.000000Z"}
-        events = [
-            {"object_id": "1", "event_type": "completed", "event_date": "2026-10-16T15:05:26.325096Z", "extra_data": extra},
-            {"object_id": "2", "event_type": "completed", "event_date": "2026-10-16T11:30:52.755048Z", "extra_data": extra},
+        utc = lambda *args: datetime(*args, tzinfo=timezone.utc)
+        completed = {"completed_due_date_local": "2026-10-21T23:59:59", "due_date": "2026-10-22T21:59:59.000000Z"}
+        activity = [
+            {"object_id": "1", "event_type": "completed", "event_date": "2026-10-21T11:50:47Z", "extra_data": completed},
+            {"object_id": "2", "event_type": "completed", "event_date": "2026-10-21T11:51:00Z", "extra_data": completed},
+            {"object_id": "1", "event_type": "updated", "event_date": "2026-10-21T11:59:56Z",
+             "extra_data": {"content": "x", "due_date": "2026-10-21T21:59:59.000000Z", "last_due_date": None}},
+            {"object_id": "1", "event_type": "updated", "event_date": "2026-10-21T12:00:00Z",
+             "extra_data": {"content": "x", "last_description": "old"}},
+            {"object_id": "1", "event_type": "uncompleted", "event_date": "2026-10-21T12:01:00Z", "extra_data": {}},
         ]
-        api._paginate = lambda path, params: iter(events)
+        api._paginate = lambda path, params: iter(activity)
         self.assertEqual(
-            api.completions("1", d("2026-10-15")),
+            api.events("1", d("2026-10-20")),
             [
-                (
-                    datetime(2026, 10, 16, 15, 5, 26, 325096, tzinfo=timezone.utc),
-                    d("2026-10-16"),
-                    datetime(2026, 10, 17, 21, 59, 59, tzinfo=timezone.utc),
-                )
+                Event(utc(2026, 10, 21, 11, 50, 47), "completed", d("2026-10-21"), utc(2026, 10, 22, 21, 59, 59)),
+                Event(utc(2026, 10, 21, 11, 59, 56), "moved", due_at=utc(2026, 10, 21, 21, 59, 59)),
+                Event(utc(2026, 10, 21, 12, 1), "uncompleted"),
             ],
         )
 
     def test_data_line_round_trip(self):
-        for pending in (None, d("2026-01-06")):
-            ledger = Ledger(d("2026-01-02"), pending, datetime(2026, 1, 5, 6, 30, tzinfo=timezone.utc), "+-.~+")
+        checked = datetime(2026, 1, 5, 6, 30, tzinfo=timezone.utc)
+        for pending, last_done in ((None, None), (d("2026-01-06"), d("2026-01-05"))):
+            ledger = Ledger(d("2026-01-02"), pending, checked, "+-.~+", last_done)
             self.assertTrue(DATA_RE.search(ledger.serialize()))
             self.assertEqual(Ledger.parse("text " + ledger.serialize(), TZ), ledger)
+
+    def test_reads_v3_data_line(self):
+        ledger = Ledger.parse("`habit-tracker:v3:2026-10-21:2026-10-22:1792580960:-+`", TZ)
+        checked = datetime.fromtimestamp(1792580960, timezone.utc)
+        self.assertEqual(ledger, Ledger(d("2026-10-21"), d("2026-10-22"), checked, "-+", None))
+
+
+class TakeBackTest(unittest.TestCase):
+    def completed_then_moved_back(self):
+        task = habit("2026-10-21")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 12))
+        api.complete(task, at("2026-10-21", 13, 50), "2026-10-22")
+        api.move(task, at("2026-10-21", 13, 52), "2026-10-21")  # moved back to today
+        run(api, "track", at("2026-10-21", 14))
+        return task, api
+
+    def test_moving_back_to_today_reopens_the_day(self):
+        task, api = self.completed_then_moved_back()
+        self.assertEqual((api.log("1"), api.ledger("1").pending), (".", d("2026-10-21")))
+        run(api, "track", at("2026-10-22", 1))
+        self.assertEqual(api.log("1"), "-.")
+
+    def test_doing_it_again_counts_for_that_day_only(self):
+        task, api = self.completed_then_moved_back()
+        api.complete(task, at("2026-10-21", 20), "2026-10-22")
+        run(api, "track", at("2026-10-22", 1))
+        self.assertEqual(api.log("1"), "+.")
+        run(api, "track", at("2026-10-23", 1))  # nothing done on the 22nd
+        self.assertEqual(api.log("1"), "+-.")
+
+    def test_taken_back_after_a_run_already_counted_it(self):
+        task = habit("2026-10-21")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 12))
+        api.complete(task, at("2026-10-21", 13), "2026-10-22")
+        run(api, "track", at("2026-10-21", 14))
+        self.assertEqual(api.log("1"), "+")
+        api.move(task, at("2026-10-21", 14, 30), "2026-10-21")
+        run(api, "track", at("2026-10-21", 15))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), (".", d("2026-10-21")))
+
+    def test_late_completion_taken_back(self):
+        task = habit("2026-10-25", every="every sunday")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-25", 1))
+        api.complete(task, at("2026-10-27", 10), "2026-11-01")
+        api.move(task, at("2026-10-27", 10, 30), "2026-10-27")  # back to that Tuesday
+        run(api, "track", at("2026-10-27", 11))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), ("...", d("2026-10-25")))
+        run(api, "track", at("2026-11-01", 1))
+        self.assertEqual(api.log("1")[0], "-")
+
+    def test_early_completion_taken_back(self):
+        task = habit("2026-10-25", every="every sunday")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 1))
+        api.complete(task, at("2026-10-21", 10), "2026-11-01")  # Sunday's, done Wednesday
+        api.move(task, at("2026-10-21", 10, 30), "2026-10-21")
+        run(api, "track", at("2026-10-21", 11))
+        self.assertEqual(api.ledger("1").pending, d("2026-10-25"))
+        self.assertNotIn("+", api.log("1"))
+
+    def test_moving_the_next_weekly_occurrence_to_today_is_not_taking_back(self):
+        task = habit("2026-10-25", every="every sunday")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-25", 1))
+        api.complete(task, at("2026-10-25", 10), "2026-11-01")
+        api.move(task, at("2026-10-28", 8), "2026-10-28")  # next week's, brought forward on Wednesday
+        run(api, "track", at("2026-10-28", 9))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), ("+...", d("2026-11-01")))
+        api.complete(task, at("2026-10-28", 18), "2026-11-01")
+        run(api, "track", at("2026-10-29", 1))
+        self.assertEqual(api.log("1"), "+......+")  # counts for Sunday the 1st, done early
+
+    def test_moving_the_next_interval_occurrence_to_today_is_not_taking_back(self):
+        task = habit("2026-10-21", every="every 2 days")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 1))
+        api.complete(task, at("2026-10-21", 10), "2026-10-23")
+        api.move(task, at("2026-10-22", 8), "2026-10-22")
+        run(api, "track", at("2026-10-22", 9))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), ("+.", d("2026-10-23")))
+
+    def test_moved_back_then_postponed_still_takes_it_back(self):
+        # The exact sequence from 21 Oct: postpone, move back, complete,
+        # move back again, postpone again, all before one run.
+        task = habit("2026-10-21")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 12))
+        api.move(task, at("2026-10-21", 13, 43), "2026-10-22")
+        api.move(task, at("2026-10-21", 13, 50), "2026-10-21")
+        api.complete(task, at("2026-10-21", 13, 51), "2026-10-22")
+        api.move(task, at("2026-10-21", 13, 59), "2026-10-21")
+        api.move(task, at("2026-10-21", 14, 14), "2026-10-22")
+        run(api, "track", at("2026-10-21", 14, 30))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), (".", d("2026-10-21")))
+        run(api, "track", at("2026-10-22", 1))
+        self.assertEqual(api.log("1"), "-.")
+
+    def test_taken_back_and_done_again_before_a_run_counts_once(self):
+        task = habit("2026-10-21")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 12))
+        api.complete(task, at("2026-10-21", 13), "2026-10-22")
+        api.move(task, at("2026-10-21", 13, 5), "2026-10-21")
+        api.complete(task, at("2026-10-21", 13, 10), "2026-10-22")
+        run(api, "track", at("2026-10-21", 14))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), ("+", d("2026-10-22")))
+
+    def test_undo_in_todoist_takes_it_back(self):
+        task = habit("2026-10-21")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 12))
+        api.complete(task, at("2026-10-21", 13), "2026-10-22")
+        run(api, "track", at("2026-10-21", 14))
+        api.undo(task, at("2026-10-21", 14, 10), "2026-10-21")
+        run(api, "track", at("2026-10-21", 15))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), (".", d("2026-10-21")))
+
+    def test_postponed_then_done_today_leaves_tomorrow_open(self):
+        task = habit("2026-10-21")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 1))
+        api.move(task, at("2026-10-21", 12), "2026-10-22")
+        api.complete(task, at("2026-10-21", 20), "2026-10-23")  # Todoist skips the 22nd
+        run(api, "track", at("2026-10-22", 1))
+        self.assertEqual((api.log("1"), api.ledger("1").pending), ("+.", d("2026-10-22")))
+        run(api, "track", at("2026-10-23", 1))
+        self.assertEqual(api.log("1"), "+-.")
+
+
+class RandomHistoryTest(unittest.TestCase):
+    """Weeks of random completing, postponing and moving back, checking after
+    every run that results stay consistent."""
+
+    SCHEDULES = ("every day", "every sunday", "every weekday", "every mon, thu", "every 2nd monday", "every 2 days")
+
+    def test_invariants(self):
+        rng = random.Random(20261021)
+        for every in self.SCHEDULES:
+            for trial in range(15):
+                with self.subTest(every=every, trial=trial):
+                    self.simulate(rng, every)
+
+    def simulate(self, rng, every):
+        schedule = parse_schedule(every)
+        start = d("2026-10-05")
+        task = habit(schedule.after(start - timedelta(days=1)).isoformat(), every=every)
+        api = FakeTodoist([task])
+        for offset in range(45):
+            day = start + timedelta(days=offset)
+            self.run_and_check(api, schedule, at(day.isoformat(), 1))
+            actions = sorted(
+                (rng.randint(8, 22), rng.randint(0, 59), rng.choice(["complete", "complete", "postpone", "back", "undo", "run"]))
+                for _ in range(rng.randint(0, 3))
+            )
+            for hour, minute, action in actions:
+                when = at(day.isoformat(), hour, minute)
+                due = d(task["due"]["date"][:10])
+                if action == "complete":
+                    # Like Todoist: the next occurrence after the due date, and after today.
+                    nxt = schedule.after(due)
+                    while nxt <= day:
+                        nxt = schedule.after(nxt)
+                    api.complete(task, when, nxt.isoformat())
+                elif action == "postpone":
+                    api.move(task, when, (max(due, day) + timedelta(days=rng.randint(1, 3))).isoformat())
+                elif action == "back":
+                    api.move(task, when, day.isoformat())
+                elif action == "undo":
+                    last = (api.history.get("1") or [None])[-1]
+                    if last and last.kind == "completed":
+                        api.undo(task, when, last.occurrence.isoformat())
+                else:
+                    self.run_and_check(api, schedule, when)
+
+    def run_and_check(self, api, schedule, now):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(run(api, "track", now), 0)
+            ledger = api.ledger("1")
+            run(api, "track", now)
+        self.assertEqual(api.ledger("1"), ledger, "a second run at the same moment changed something")
+        self.assertRegex(ledger.log, r"^[+~.\-]*$")
+        if not schedule.on_calendar:
+            return
+        scheduled = lambda day: schedule.after(day - timedelta(days=1)) == day
+        for i, result in enumerate(ledger.log):
+            if result != ".":
+                self.assertTrue(scheduled(ledger.since + timedelta(days=i)), f"result off schedule: {ledger}")
+        occurrence = ledger.since if scheduled(ledger.since) else schedule.after(ledger.since)
+        while schedule.after(occurrence) <= now.date():
+            i = (occurrence - ledger.since).days
+            self.assertNotEqual(ledger.log[i : i + 1] or ".", ".", f"{occurrence} has no result: {ledger}")
+            occurrence = schedule.after(occurrence)
 
 
 if __name__ == "__main__":

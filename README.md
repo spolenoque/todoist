@@ -10,7 +10,7 @@ Completion rate: 87% (17 on time / 3 late / 3 failed)
 Current streak: 5 completions 🔥
 Best streak: 9 completions
 Last 10 results: 🟩🟩🟥🟩🟨🟩🟩🟩🟩🟩
-Updated 16 Oct 2026 07:00  `habit-tracker:v3:2026-09-23:2026-10-17:1792130400:++-+.~…`
+Updated 16 Oct 2026 07:00  `habit-tracker:v4:2026-09-23:2026-10-17:1792130400:2026-10-16:++-+.~…`
 ```
 
 Python 3.9+, no dependencies.
@@ -29,6 +29,8 @@ Python 3.9+, no dependencies.
 4. Run it for real: `python3 habit_tracker.py`
 
 Options: `--label NAME` (or `HABIT_LABEL`) to track a different label.
+`--task ID_OR_LINK` updates just one task; it takes the task's ID or its
+Todoist link, and the task still has to be a recurring tracked one.
 `HABIT_TZ=Europe/Warsaw` overrides the timezone; by default it comes from your
 Todoist account settings.
 
@@ -46,6 +48,13 @@ Postponing a task doesn't change the day it was scheduled for. A Sunday task
 moved to Tuesday and done there is late. A daily task postponed to tomorrow
 fails when tomorrow arrives, and doing it tomorrow counts for tomorrow.
 
+To take a completion back, move the task back to the day you completed it (or
+earlier), or use Todoist's undo, which does the same. That occurrence is open
+again, even if you move the task somewhere else afterwards: do it again to
+count it, or it fails when the next one arrives. Moving
+a later occurrence earlier, to a day after your last completion, is just
+planning ahead and takes nothing back.
+
 The completion rate counts late as done and shows the split, e.g.
 `80% (6 on time / 2 late / 2 failed)`. A late result keeps a streak going;
 only a failure breaks it. Days with no occurrence don't count.
@@ -56,7 +65,8 @@ the common English forms: `every day`, `every other day`, `every 3 days`,
 `every 2 weeks on tue`, `every weekday`, `every 3 months`, `every 15th`,
 `every last day`, `every 2nd monday`, `every last workday`, `every jan 1`,
 `every last sun feb, last sun apr, …`. Times and `starting`/`until` parts are
-ignored. If it can't read the repeat text, it can't know when the next
+ignored. Hourly repeats (`every 12 hours`) aren't supported. If it can't read
+the repeat text, it can't know when the next
 occurrence is: an occurrence then fails the day after it was due, and there is
 no late.
 
@@ -65,8 +75,8 @@ it's already overdue by then. Completions from before tracking started are
 ignored.
 
 Todoist doesn't record which occurrence is still open, so the per-day results,
-the open occurrence and the time of the last check are stored in the backtick
-line at the end of the stats comment. Don't edit that line. If you delete the
+the open occurrence, the time of the last check and the day of the last
+completion are stored in the backtick line at the end of the stats comment. Don't edit that line. If you delete the
 comment, tracking starts over.
 
 ## Scheduling
