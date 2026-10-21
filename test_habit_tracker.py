@@ -184,6 +184,26 @@ class StatsTest(unittest.TestCase):
         self.assertIn("Current streak: **3 completions** 🔥", content)
         self.assertIn("Last 10 results: 🟩🟨🟥🟩🟩🟨\n", content)
 
+    def test_render_adds_a_grey_square_for_the_occurrence_due_now(self):
+        ledger = Ledger(d("2026-10-01"), d("2026-10-09"), at("2026-10-09"), "+~.-++.~.")
+        self.assertIn("Last 10 results: 🟩🟨🟥🟩🟩🟨⬜\n", render(ledger, at("2026-10-09", 14)))
+        self.assertIn("Last 10 results: 🟩🟨🟥🟩🟩🟨\n", render(ledger, at("2026-10-08", 14)))  # not due yet
+        fresh = Ledger(d("2026-10-08"), d("2026-10-08"), at("2026-10-08"), ".")
+        self.assertIn("Last 10 results: ⬜\n", render(fresh, at("2026-10-08", 14)))
+
+    def test_postponed_task_shows_grey_until_it_fails(self):
+        task = habit("2026-10-21")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 1))
+        api.move(task, at("2026-10-21", 12), "2026-10-22")
+        run(api, "track", at("2026-10-21", 14))
+        self.assertIn("Last 10 results: ⬜\n", api.comment_store["1"][0]["content"])
+        run(api, "track", at("2026-10-22", 1))
+        self.assertIn("Last 10 results: 🟥⬜\n", api.comment_store["1"][0]["content"])  # the 22nd is due now
+        api.complete(task, at("2026-10-22", 9), "2026-10-23")
+        run(api, "track", at("2026-10-22", 10))
+        self.assertIn("Last 10 results: 🟥🟩\n", api.comment_store["1"][0]["content"])
+
     def test_no_results(self):
         s = compute_stats(self.ledger("."))
         self.assertIsNone(s.rate)

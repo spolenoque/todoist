@@ -58,6 +58,7 @@ UPDATED_RE = re.compile(r"_Updated (\d{1,2} \w{3} \d{4} \d{2}:\d{2})_")
 SETTLE_TIME = timedelta(minutes=5)
 RECENT_RESULTS = 10
 SQUARES = {DONE: "🟩", LATE: "🟨", FAILED: "🟥"}
+OPEN_SQUARE = "⬜"  # the occurrence due now, not done yet
 
 WEEKDAYS = {
     "mon": 0, "monday": 0, "tue": 1, "tues": 1, "tuesday": 1,
@@ -370,6 +371,13 @@ class Ledger:
     def extend_to(self, day: date):
         self.log = self.log.ljust((day - self.since).days + 1, EMPTY)
 
+    def is_due_now(self, today: date) -> bool:
+        """The open occurrence's day has arrived and it has no result yet."""
+        if self.pending is None or self.pending > today:
+            return False
+        i = (self.pending - self.since).days
+        return i < 0 or self.log[i : i + 1] in ("", EMPTY)
+
     def mark(self, day: date, result: str):
         """Record a result for a day unless it already has one."""
         i = (day - self.since).days
@@ -467,7 +475,9 @@ def render(ledger: Ledger, now: datetime) -> str:
     else:
         streak = "—"
     results = ledger.log.replace(EMPTY, "")
-    recent = "".join(SQUARES[c] for c in results[-RECENT_RESULTS:]) or "—"
+    recent = "".join(SQUARES[c] for c in results[-RECENT_RESULTS:])
+    if ledger.is_due_now(now.date()):
+        recent += OPEN_SQUARE
     return "\n".join(
         [
             "📊 **Habit stats**",
@@ -475,7 +485,7 @@ def render(ledger: Ledger, now: datetime) -> str:
             f"Completion rate: {rate}",
             f"Current streak: {streak}",
             f"Best streak: {plural(s.best_streak, 'completion')}",
-            f"Last {RECENT_RESULTS} results: {recent}",
+            f"Last {RECENT_RESULTS} results: {recent or '—'}",
             f"_Updated {now:%d %b %Y %H:%M}_ {ledger.serialize()}",
         ]
     )

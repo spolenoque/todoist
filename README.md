@@ -44,6 +44,9 @@ scheduled for:
 - 🟨 **late**: done after that day, but before the next occurrence's day.
 - 🟥 **failed**: the next occurrence's day arrived and it still wasn't done.
 
+A ⬜ after the last 10 results marks the occurrence that's due now and not done
+yet; it turns into one of the above.
+
 Postponing a task doesn't change the day it was scheduled for. A Sunday task
 moved to Tuesday and done there is late. A daily task postponed to tomorrow
 fails when tomorrow arrives, and doing it tomorrow counts for tomorrow.
