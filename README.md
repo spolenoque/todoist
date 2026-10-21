@@ -6,11 +6,11 @@ Habit tracker for Todoist. For every **recurring** task with the `@track` label,
 ```
 📊 Habit stats
 Tracking since: 23 Sep 2026
-Completion rate: 87% (20 completed / 3 failed)
+Completion rate: 87% (17 on time / 3 late / 3 failed)
 Current streak: 5 completions 🔥
 Best streak: 9 completions
-Last 10 results: 🟩🟩🟥🟩🟩🟩🟩🟩🟩🟩
-Updated 16 Oct 2026 07:00  `habit-tracker:v1:2026-09-23:2026-10-16:++-+.+…`
+Last 10 results: 🟩🟩🟥🟩🟨🟩🟩🟩🟩🟩
+Updated 16 Oct 2026 07:00  `habit-tracker:v3:2026-09-23:2026-10-17:1792130400:++-+.~…`
 ```
 
 Python 3.9+, no dependencies.
@@ -34,34 +34,40 @@ Todoist account settings.
 
 ## How it counts
 
-Each calendar day since tracking started gets at most one outcome:
+Every occurrence of the task gets one result, recorded on the day it was
+scheduled for:
 
-- **failed**: a run of the script found the task overdue. Every scheduled
-  occurrence from the overdue due date up to yesterday is failed: each day for
-  a daily task, once a week for a weekly one. Today is failed too if the task
-  had a due time today that has passed. Failures are final: completing the
-  task late doesn't undo them.
-- **completed**: the task was completed that day, and the day isn't failed.
-- Days with neither (not due yet, or a weekly task's off days) don't count and
-  don't break streaks.
+- 🟩 **completed**: done on that day, or earlier. Ticking a Sunday task on
+  Saturday counts for Sunday.
+- 🟨 **late**: done after that day, but before the next occurrence's day.
+- 🟥 **failed**: the next occurrence's day arrived and it still wasn't done.
 
-So a task due yesterday that you complete this morning gives yesterday 🟥 if
-the script ran before you completed it, and today 🟩. A task due every Monday
-that you complete on Thursday gives Monday 🟥 and Thursday 🟩. It gets a
-second 🟥 only if it is still overdue the following Monday.
+Postponing a task doesn't change the day it was scheduled for. A Sunday task
+moved to Tuesday and done there is late. A daily task postponed to tomorrow
+fails when tomorrow arrives, and doing it tomorrow counts for tomorrow.
 
-The schedule comes from the task's repeat text. The script understands the
-common English forms: `every day`, `every other day`, `every 3 days`,
+The completion rate counts late as done and shows the split, e.g.
+`80% (6 on time / 2 late / 2 failed)`. A late result keeps a streak going;
+only a failure breaks it. Days with no occurrence don't count.
+
+The occurrence days come from the task's repeat text. The script understands
+the common English forms: `every day`, `every other day`, `every 3 days`,
 `every monday`, `every mon, wed, fri`, `every other monday`,
-`every 2 weeks on tue`, `every weekday`, `every 15th`, `every 2nd monday`,
-`every 3 months`, `every jan 1`. Times and `starting`/`until` parts are
-ignored. If it can't read the repeat text, only the overdue due date fails. Tracking starts on the
-first run that sees the task, or at its due date if it's already overdue by
-then. Completions from before tracking started are ignored.
+`every 2 weeks on tue`, `every weekday`, `every 3 months`, `every 15th`,
+`every last day`, `every 2nd monday`, `every last workday`, `every jan 1`,
+`every last sun feb, last sun apr, …`. Times and `starting`/`until` parts are
+ignored. If it can't read the repeat text, it can't know when the next
+occurrence is: an occurrence then fails the day after it was due, and there is
+no late.
 
-Todoist keeps no record of a task having been overdue, so the per-day history
-is stored in the backtick line at the end of the stats comment. Don't edit that
-line. If you delete the comment, tracking starts over.
+Tracking starts on the first run that sees the task, or at its due date if
+it's already overdue by then. Completions from before tracking started are
+ignored.
+
+Todoist doesn't record which occurrence is still open, so the per-day results,
+the open occurrence and the time of the last check are stored in the backtick
+line at the end of the stats comment. Don't edit that line. If you delete the
+comment, tracking starts over.
 
 ## Scheduling
 
