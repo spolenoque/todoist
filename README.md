@@ -5,12 +5,12 @@ Habit tracker for Todoist. For every **recurring** task with the `@track` label,
 
 ```
 📊 Habit stats
-Tracking since: 23 Sep 2026
-Completion rate: 87% (17 on time / 3 late / 3 failed)
-Current streak: 5 completions 🔥
-Best streak: 9 completions
-Last 10 results: 🟩🟩🟥🟩🟨🟩🟩🟩🟩🟩
-Updated 16 Oct 2026 07:00  `habit-tracker:v4:2026-09-23:2026-10-17:1792130400:2026-10-16:++-+.~…`
+Tracking since: 02 Jul 2026
+Completion rate: 72% (81 on time / 0 late / 31 failed)
+Current streak: 8 completions 🔥
+Best streak: 12 completions
+Last 10 results: 🟥🟥🟩🟩🟩🟩🟩🟩🟩🟩
+Updated 21 Oct 2026 14:53  `habit-tracker:v4:2026-07-02:2026-10-22:…`
 ```
 
 Python 3.9+, no dependencies.
@@ -31,6 +31,11 @@ Python 3.9+, no dependencies.
 Options: `--label NAME` (or `HABIT_LABEL`) to track a different label.
 `--task ID_OR_LINK` updates just one task; it takes the task's ID or its
 Todoist link, and the task still has to be a recurring tracked one.
+`--rebuild --task ID_OR_LINK` recalculates that task's history from Todoist's
+activity log, starting at its first completion, instead of continuing from the
+last run. It only works together with `--task`. It
+gives the same result every time, so it's safe to repeat. The activity log
+keeps the full history on paid plans and only the last 7 days on the free one.
 `HABIT_TZ=Europe/Warsaw` overrides the timezone; by default it comes from your
 Todoist account settings.
 
@@ -56,7 +61,9 @@ earlier), or use Todoist's undo, which does the same. That occurrence is open
 again, even if you move the task somewhere else afterwards: do it again to
 count it, or it fails when the next one arrives. Moving
 a later occurrence earlier, to a day after your last completion, is just
-planning ahead and takes nothing back.
+planning ahead and takes nothing back. When you do a task ahead of its day,
+Todoist may bring it back to that day; ticking it again there doesn't count
+twice.
 
 The completion rate counts late as done and shows the split, e.g.
 `80% (6 on time / 2 late / 2 failed)`. A late result keeps a streak going;

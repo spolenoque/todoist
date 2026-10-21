@@ -19,6 +19,7 @@ from habit_tracker import (
     render,
     run,
     task_id_from,
+    update_task,
 )
 
 TZ = ZoneInfo("Europe/Warsaw")
@@ -103,6 +104,7 @@ def habit(due: str, task_id="1", labels=("track",), recurring=True, every="every
         "id": task_id,
         "content": f"habit {task_id}",
         "labels": list(labels),
+        "added_at": "2026-01-01T00:00:00Z",
         "due": {"date": due, "is_recurring": recurring, "string": every},
     }
 
@@ -208,6 +210,104 @@ class StatsTest(unittest.TestCase):
         s = compute_stats(self.ledger("."))
         self.assertIsNone(s.rate)
         self.assertIsNone(s.streak_kind)
+
+
+class RebuildTest(unittest.TestCase):
+    def test_rebuilds_from_the_first_completion(self):
+        task = habit("2026-10-12")
+        api = FakeTodoist([task])
+        api.complete(task, at("2026-10-12", 9), "2026-10-13")
+        api.complete(task, at("2026-10-13", 9), "2026-10-14")
+        # nothing on the 14th and 15th
+        api.complete(task, at("2026-10-16", 9), "2026-10-17")  # the 14th's occurrence
+        run(api, "track", at("2026-10-17", 1))  # tracking started only now
+        self.assertEqual(api.ledger("1").since, d("2026-10-17"))
+        run(api, "track", at("2026-10-17", 2), rebuild=True)
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.since, ledger.log, ledger.pending), (d("2026-10-12"), "++--+.", d("2026-10-17")))
+        self.assertEqual(len(api.comment_store["1"]), 1)  # same comment, rewritten
+
+    def test_a_mistyped_first_due_date_is_ignored(self):
+        # Set up on 2 Jul with the year typed wrong, then fixed and redone.
+        task = habit("2027-07-01")
+        api = FakeTodoist([task])
+        api.complete(task, at("2026-07-02", 11, 19), "2027-07-02")
+        api.move(task, at("2026-07-02", 11, 20), "2026-07-02")
+        api.complete(task, at("2026-07-02", 11, 21), "2026-07-03")
+        api.complete(task, at("2026-07-03", 9), "2026-07-04")
+        run(api, "track", at("2026-07-04", 1), rebuild=True)
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.since, ledger.log, ledger.pending), (d("2026-07-02"), "++.", d("2026-07-04")))
+
+    def test_a_late_first_completion_starts_at_its_due_day(self):
+        task = habit("2026-10-12")
+        api = FakeTodoist([task])
+        api.complete(task, at("2026-10-15", 9), "2026-10-16")  # open since the 12th
+        run(api, "track", at("2026-10-16", 1), rebuild=True)
+        self.assertEqual(api.log("1"), "---+.")
+
+    def test_first_completion_moved_ahead_counts_for_its_scheduled_day(self):
+        # 1st Sunday of Jan/May/Sep, moved to Saturday 5 Sep and done there.
+        task = habit("2026-09-05", every="every 1st Sun Jan, 1st Sun May, 1st Sun Sep")
+        api = FakeTodoist([task])
+        api.complete(task, at("2026-09-05", 18), "2027-01-03")
+        run(api, "track", at("2026-10-21", 1), rebuild=True)
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.since, ledger.log[:1], ledger.pending), (d("2026-09-06"), "+", d("2027-01-03")))
+        self.assertNotIn("⬜", api.comment_store["1"][0]["content"])
+
+    def test_moved_ahead_and_ticked_twice_counts_once(self):
+        # The real 'Planning' history: created 13 Aug, Sunday 6 Sep moved to
+        # Saturday the 5th and done; Todoist put it back on the 6th, so it
+        # was ticked again a minute later.
+        task = habit("2026-09-06", every="every 1st Sun Jan, 1st Sun May, 1st Sun Sep")
+        task["added_at"] = "2026-08-13T12:02:00Z"
+        api = FakeTodoist([task])
+        api.move(task, at("2026-09-05", 10, 55), "2026-09-05")
+        api.complete(task, at("2026-09-05", 15, 40), "2026-09-06")
+        api.complete(task, at("2026-09-05", 15, 41), "2027-01-03")
+        run(api, "track", at("2026-10-21", 1), rebuild=True)
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.since, ledger.log.rstrip("."), ledger.pending), (d("2026-09-06"), "+", d("2027-01-03")))
+
+    def test_weekly_done_ahead_then_ticked_again_on_its_day_counts_once(self):
+        task = habit("2026-10-25", every="every sunday")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 1))
+        api.move(task, at("2026-10-24", 9), "2026-10-24")
+        api.complete(task, at("2026-10-24", 10), "2026-10-25")  # Todoist brings it back to Sunday
+        api.complete(task, at("2026-10-25", 10), "2026-11-01")
+        run(api, "track", at("2026-10-26", 1))
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.log.rstrip("."), ledger.pending), ("....+", d("2026-11-01")))
+
+    def test_ticking_an_old_occurrence_on_the_next_ones_day_counts_for_that_one(self):
+        task = habit("2026-10-25", every="every sunday")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 1))
+        api.move(task, at("2026-10-24", 9), "2026-10-24")
+        api.complete(task, at("2026-10-24", 10), "2026-10-25")  # Todoist brings it back to Sunday the 25th
+        # Not ticked again on the 25th; the following Sunday, Todoist still has the 25th open.
+        api.complete(task, at("2026-11-01", 10), "2026-11-08")
+        run(api, "track", at("2026-11-02", 1))
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.result(d("2026-10-25")), ledger.result(d("2026-11-01")), ledger.pending), ("+", "+", d("2026-11-08")))
+
+    def test_first_completion_postponed_counts_late_for_its_scheduled_day(self):
+        # Sunday 4 Oct postponed to Monday and done there; Todoist then moves it to the 11th.
+        task = habit("2026-10-05", every="every sunday")
+        api = FakeTodoist([task])
+        api.complete(task, at("2026-10-05", 9), "2026-10-11")
+        run(api, "track", at("2026-10-06", 1), rebuild=True)
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.since, ledger.log[0], ledger.pending), (d("2026-10-04"), "~", d("2026-10-11")))
+
+    def test_without_completions_it_starts_like_new_tracking(self):
+        task = habit("2026-10-25", every="every sunday")
+        api = FakeTodoist([task])
+        run(api, "track", at("2026-10-21", 1), rebuild=True)
+        ledger = api.ledger("1")
+        self.assertEqual((ledger.since, ledger.pending), (d("2026-10-21"), d("2026-10-25")))
 
 
 class OccurrenceTest(unittest.TestCase):
@@ -587,6 +687,11 @@ class RandomHistoryTest(unittest.TestCase):
         for offset in range(45):
             day = start + timedelta(days=offset)
             self.run_and_check(api, schedule, at(day.isoformat(), 1))
+            if offset == 15:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    run(api, "track", at(day.isoformat(), 1, 30), rebuild=True)
+            elif offset > 15 and offset % 6 == 0:
+                self.check_rebuild_agrees(api, task, at(day.isoformat(), 1))
             actions = sorted(
                 (rng.randint(8, 22), rng.randint(0, 59), rng.choice(["complete", "complete", "postpone", "back", "undo", "run"]))
                 for _ in range(rng.randint(0, 3))
@@ -610,6 +715,17 @@ class RandomHistoryTest(unittest.TestCase):
                         api.undo(task, when, last.occurrence.isoformat())
                 else:
                     self.run_and_check(api, schedule, when)
+
+    def check_rebuild_agrees(self, api, task, now):
+        """After a rebuild, the night-by-night updates and rebuilding again
+        from the whole history give exactly the same results."""
+        nightly = api.ledger("1")
+        with contextlib.redirect_stdout(io.StringIO()):
+            rebuilt = Ledger.parse(update_task(api, task, now, dry_run=True, rebuild=True), TZ)
+        self.assertEqual(
+            (nightly.since, nightly.pending, nightly.log.rstrip(".")),
+            (rebuilt.since, rebuilt.pending, rebuilt.log.rstrip(".")),
+        )
 
     def run_and_check(self, api, schedule, now):
         with contextlib.redirect_stdout(io.StringIO()):
