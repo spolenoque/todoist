@@ -2,9 +2,9 @@ name: Habit tracker
 
 on:
   schedule:
-    # 23:15 UTC is 00:15 CET / 01:15 CEST. It runs just after local midnight
-    # so anything left undone yesterday is overdue and counts as failed.
-    - cron: "15 23 * * *"
+    # 00:15 UTC is 01:15 CET / 02:15 CEST. It runs after local midnight so
+    # anything left undone yesterday is overdue and counts as failed.
+    - cron: "15 0 * * *"
   workflow_dispatch:
     inputs:
       dry_run:

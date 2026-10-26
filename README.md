@@ -115,7 +115,7 @@ Run the script once a day, shortly after midnight, so it sees yesterday's
 misses as overdue before you complete or reschedule them.
 
 It runs nightly on GitHub Actions (`.github/workflows/habit-tracker.yml`) at
-23:15 UTC, which is 00:15/01:15 in Madrid. To set it up, add your token as a
+00:15 UTC, which is 01:15/02:15 in Madrid. To set it up, add your token as a
 repository secret named `TODOIST_API_TOKEN` (Settings → Secrets and variables
 → Actions). Each extra account gets its own secret and its own step in the
 workflow, like the one for `lu`. To run it by hand, open Actions → Habit tracker → Run workflow, and
