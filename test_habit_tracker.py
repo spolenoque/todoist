@@ -65,7 +65,7 @@ class FakeTodoist:
     def add_comment(self, task_id, content):
         self.writes += 1
         comments = self.comment_store.setdefault(task_id, [])
-        comments.append({"id": f"c{len(comments)}", "content": content})
+        comments.append({"id": f"c{task_id}-{len(comments)}", "content": content})
 
     def update_comment(self, comment_id, content):
         self.writes += 1
@@ -181,17 +181,49 @@ class StatsTest(unittest.TestCase):
         self.assertEqual((s.streak, s.streak_kind, s.best_streak), (2, "-", 2))
 
     def test_render(self):
-        content = render(self.ledger("+~.-++.~"), at("2026-10-08"))
-        self.assertIn("Completion rate: **83%** (3 on time / 2 late / 1 failed)", content)
-        self.assertIn("Current streak: **3 completions** 🔥", content)
-        self.assertIn("Last 10 results: 🟩🟨🟥🟩🟩🟨\n", content)
+        ledger = self.ledger("+~.-++.~++-+")
+        lines = render(ledger, at("2026-10-12")).splitlines()
+        self.assertEqual(lines[0], f"[📊](https://github.com/spolenoque/todoist#{ledger.serialize()}) **Habit stats**")
+        self.assertEqual(
+            lines[1:],
+            [
+                "Tracking since: **01 Oct 2026**",
+                "Completion rate: **80%** (6/2/2)",
+                "Current streak: **1 completion** 🔥",
+                "Best streak: 5 completions",
+                "Last 7 results: 🟩🟩🟨🟩🟩🟥🟩",
+            ],
+        )
+        self.assertEqual(Ledger.parse(render(ledger, at("2026-10-12")), TZ), ledger)
+
+    def test_render_detailed(self):
+        ledger = self.ledger("+~.-++.~++-+")
+        content = render(ledger, at("2026-10-12", 9, 5), detailed=True)
+        self.assertEqual(
+            content.splitlines(),
+            [
+                "📊 **Habit stats**",
+                "Tracking since: **01 Oct 2026**",
+                "Completion rate: **80%** (6 on time / 2 late / 2 failed)",
+                "Current streak: **1 completion** 🔥",
+                "Best streak: 5 completions",
+                "Last 10 results: 🟩🟨🟥🟩🟩🟨🟩🟩🟥🟩",
+                f"_Updated 12 Oct 2026 09:05_ `{ledger.serialize()}`",
+            ],
+        )
+        self.assertEqual(Ledger.parse(content, TZ), ledger)
+
+    def test_last_results_are_the_most_recent(self):
+        ledger = self.ledger("---++++----")
+        self.assertIn("Last 7 results: 🟩🟩🟩🟥🟥🟥🟥", render(ledger, at("2026-10-11")).splitlines())
+        self.assertIn("Last 10 results: 🟥🟥🟩🟩🟩🟩🟥🟥🟥🟥", render(ledger, at("2026-10-11"), detailed=True).splitlines())
 
     def test_render_adds_a_grey_square_for_the_occurrence_due_now(self):
         ledger = Ledger(d("2026-10-01"), d("2026-10-09"), at("2026-10-09"), "+~.-++.~.")
-        self.assertIn("Last 10 results: 🟩🟨🟥🟩🟩🟨⬜\n", render(ledger, at("2026-10-09", 14)))
-        self.assertIn("Last 10 results: 🟩🟨🟥🟩🟩🟨\n", render(ledger, at("2026-10-08", 14)))  # not due yet
+        self.assertIn("Last 7 results: 🟩🟨🟥🟩🟩🟨⬜", render(ledger, at("2026-10-09", 14)).splitlines())
+        self.assertIn("Last 7 results: 🟩🟨🟥🟩🟩🟨", render(ledger, at("2026-10-08", 14)).splitlines())  # not due yet
         fresh = Ledger(d("2026-10-08"), d("2026-10-08"), at("2026-10-08"), ".")
-        self.assertIn("Last 10 results: ⬜\n", render(fresh, at("2026-10-08", 14)))
+        self.assertIn("Last 7 results: ⬜", render(fresh, at("2026-10-08", 14)).splitlines())
 
     def test_postponed_task_shows_grey_until_it_fails(self):
         task = habit("2026-10-21")
@@ -199,12 +231,12 @@ class StatsTest(unittest.TestCase):
         run(api, "track", at("2026-10-21", 1))
         api.move(task, at("2026-10-21", 12), "2026-10-22")
         run(api, "track", at("2026-10-21", 14))
-        self.assertIn("Last 10 results: ⬜\n", api.comment_store["1"][0]["content"])
+        self.assertIn("Last 7 results: ⬜", api.comment_store["1"][0]["content"].splitlines())
         run(api, "track", at("2026-10-22", 1))
-        self.assertIn("Last 10 results: 🟥⬜\n", api.comment_store["1"][0]["content"])  # the 22nd is due now
+        self.assertIn("Last 7 results: 🟥⬜", api.comment_store["1"][0]["content"].splitlines())  # the 22nd is due now
         api.complete(task, at("2026-10-22", 9), "2026-10-23")
         run(api, "track", at("2026-10-22", 10))
-        self.assertIn("Last 10 results: 🟥🟩\n", api.comment_store["1"][0]["content"])
+        self.assertIn("Last 7 results: 🟥🟩", api.comment_store["1"][0]["content"].splitlines())
 
     def test_no_results(self):
         s = compute_stats(self.ledger("."))
@@ -476,7 +508,21 @@ class RunTest(unittest.TestCase):
         run(api, "track", at("2026-10-22", 1))
         self.assertEqual(api.comment_store["1"][0]["content"], "my own note")
         self.assertEqual(api.log("1"), "-+.")
-        self.assertIn("`habit-tracker:v4:", api.comment_store["1"][1]["content"])
+        self.assertIn("#habit-tracker:v4:", api.comment_store["1"][1]["content"])
+
+    def test_tasks_named_test_get_the_detailed_comment(self):
+        short, detailed = habit("2026-10-20", "1"), habit("2026-10-20", "2")
+        detailed["content"] = "Test 2"
+        api = FakeTodoist([short, detailed])
+        run(api, "track", at("2026-10-21", 1))
+        self.assertIn("Last 7 results: 🟥⬜", api.comment_store["1"][0]["content"].splitlines())
+        self.assertIn("Last 10 results: 🟥⬜", api.comment_store["2"][0]["content"].splitlines())
+        # Renaming switches the layout and keeps the same comment and history.
+        short["content"], detailed["content"] = "test 1", "habit 2"
+        run(api, "track", at("2026-10-22", 1))
+        self.assertIn("Last 10 results: 🟥🟥⬜", api.comment_store["1"][0]["content"].splitlines())
+        self.assertIn("Last 7 results: 🟥🟥⬜", api.comment_store["2"][0]["content"].splitlines())
+        self.assertEqual([len(api.comment_store[i]) for i in "12"], [1, 1])
 
     def test_single_task_run_updates_only_that_task(self):
         api = FakeTodoist([habit("2026-10-16", "1"), habit("2026-10-16", "2")])

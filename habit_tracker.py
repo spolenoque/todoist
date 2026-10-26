@@ -3,7 +3,9 @@
 
 For every recurring task carrying the tracking label (default: "track"), keep a
 single comment on the task with habit stats: when tracking started, the
-completion rate, the current and best streak, and the last 10 results.
+completion rate, the current and best streak, and the last 7 results. Tasks
+with "test" in their name get a detailed comment instead: the full split of
+the completion rate, the last 10 results, and the time of the update.
 
 Every occurrence of the task gets one result, recorded on the day it was
 scheduled for:
@@ -18,8 +20,8 @@ occurrence fails the day after it was due and there is no late.
 
 Todoist doesn't record which occurrence is still open, so the per-day results,
 the open occurrence, the time of the last check and the day of the last
-completion are stored in the stats comment itself (the last line). Run the
-script at least once a day.
+completion are stored in the stats comment itself: in the link behind the 📊,
+or on the last line of a detailed comment. Run the script at least once a day.
 
 Usage:
   TODOIST_API_TOKEN=... python3 habit_tracker.py [--dry-run] [--label track]
@@ -48,16 +50,21 @@ API_URL = "https://api.todoist.com/api/v1"
 
 DONE, LATE, FAILED, EMPTY = "+", "~", "-", "."
 DATE = r"\d{4}-\d{2}-\d{2}"
-MARKER_RE = re.compile(r"`habit-tracker:v\d:")
+MARKER_RE = re.compile(r"habit-tracker:v\d:")
 # v3 had no last-completion field.
-DATA_RE = re.compile(rf"`habit-tracker:v[34]:({DATE}):({DATE}|-):(\d+):(?:({DATE}|-):)?([+~.\-]*)`")
+DATA_RE = re.compile(rf"habit-tracker:v[34]:({DATE}):({DATE}|-):(\d+):(?:({DATE}|-):)?([+~.\-]*)")
 # Written by the first version, before late results existed.
-V1_RE = re.compile(rf"`habit-tracker:v1:({DATE}):({DATE}):([+.\-]*)`")
+V1_RE = re.compile(rf"habit-tracker:v1:({DATE}):({DATE}):([+.\-]*)")
 UPDATED_RE = re.compile(r"_Updated (\d{1,2} \w{3} \d{4} \d{2}:\d{2})_")
 # Completions this recent wait for the next run, in case the activity log
 # hasn't caught up yet.
 SETTLE_TIME = timedelta(minutes=5)
-RECENT_RESULTS = 10
+RECENT_RESULTS = 7
+# Tasks with this in their name get the detailed comment, with the data in view.
+DETAILED_NAME = "test"
+DETAILED_RECENT_RESULTS = 10
+# The short comment keeps its data in the link behind the 📊, which leads here.
+ABOUT_URL = "https://github.com/spolenoque/todoist"
 SQUARES = {DONE: "🟩", LATE: "🟨", FAILED: "🟥"}
 OPEN_SQUARE = "⬜"  # the occurrence due now, not done yet
 
@@ -386,7 +393,7 @@ class Ledger:
     def serialize(self) -> str:
         checked = int(self.checked.timestamp())
         last_done = self.last_done or "-"
-        return f"`habit-tracker:v4:{self.since}:{self.pending or '-'}:{checked}:{last_done}:{self.log}`"
+        return f"habit-tracker:v4:{self.since}:{self.pending or '-'}:{checked}:{last_done}:{self.log}"
 
     def extend_to(self, day: date):
         self.log = self.log.ljust((day - self.since).days + 1, EMPTY)
@@ -493,31 +500,40 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
-def render(ledger: Ledger, now: datetime) -> str:
+def render(ledger: Ledger, now: datetime, detailed: bool = False) -> str:
     s = compute_stats(ledger)
     if s.rate is None:
         rate = "— (no results yet)"
-    else:
+    elif detailed:
         rate = f"**{s.rate}%** ({s.completed} on time / {s.late} late / {s.failed} failed)"
+    else:
+        rate = f"**{s.rate}%** ({s.completed}/{s.late}/{s.failed})"
     if s.streak_kind == DONE:
         streak = f"**{plural(s.streak, 'completion')}** 🔥"
     elif s.streak_kind == FAILED:
         streak = f"**{plural(s.streak, 'fail')}** ❌"
     else:
         streak = "—"
+    count = DETAILED_RECENT_RESULTS if detailed else RECENT_RESULTS
     results = ledger.log.replace(EMPTY, "")
-    recent = "".join(SQUARES[c] for c in results[-RECENT_RESULTS:])
+    recent = "".join(SQUARES[c] for c in results[-count:])
     if ledger.is_due_now(now.date()):
         recent += OPEN_SQUARE
+    if detailed:
+        title = "📊 **Habit stats**"
+        footer = [f"_Updated {now:%d %b %Y %H:%M}_ `{ledger.serialize()}`"]
+    else:
+        title = f"[📊]({ABOUT_URL}#{ledger.serialize()}) **Habit stats**"
+        footer = []
     return "\n".join(
         [
-            "📊 **Habit stats**",
+            title,
             f"Tracking since: **{ledger.since:%d %b %Y}**",
             f"Completion rate: {rate}",
             f"Current streak: {streak}",
             f"Best streak: {plural(s.best_streak, 'completion')}",
-            f"Last {RECENT_RESULTS} results: {recent or '—'}",
-            f"_Updated {now:%d %b %Y %H:%M}_ {ledger.serialize()}",
+            f"Last {count} results: {recent or '—'}",
+            *footer,
         ]
     )
 
@@ -592,7 +608,7 @@ def update_task(api, task: dict, now: datetime, dry_run: bool, rebuild: bool = F
     ledger.extend_to(today)
     ledger.checked = max(ledger.checked, until)
 
-    content = render(ledger, now)
+    content = render(ledger, now, detailed=DETAILED_NAME in task["content"].lower())
     if dry_run:
         print(f"--- {task['content']} ({task['id']})\n{content}\n")
     elif comment:

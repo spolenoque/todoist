@@ -6,12 +6,16 @@ Habit tracker for Todoist. For every **recurring** task with the `@track` label,
 ```
 📊 Habit stats
 Tracking since: 02 Jul 2026
-Completion rate: 72% (81 on time / 0 late / 31 failed)
+Completion rate: 72% (81/0/31)
 Current streak: 8 completions 🔥
 Best streak: 12 completions
-Last 10 results: 🟥🟥🟩🟩🟩🟩🟩🟩🟩🟩
-Updated 21 Oct 2026 14:53  `habit-tracker:v4:2026-07-02:2026-10-22:…`
+Last 7 results: 🟥🟩🟩🟩🟩🟩🟩
 ```
+
+The completion rate's numbers are on time / late / failed. Tasks with "test"
+in their name get a detailed comment for checking the script's work: the rate
+spelled out, the last 10 results, and the time of the update with the stored
+data (see below).
 
 Python 3.9+, no dependencies.
 
@@ -49,7 +53,7 @@ scheduled for:
 - 🟨 **late**: done after that day, but before the next occurrence's day.
 - 🟥 **failed**: the next occurrence's day arrived and it still wasn't done.
 
-A ⬜ after the last 10 results marks the occurrence that's due now and not done
+A ⬜ after the last results marks the occurrence that's due now and not done
 yet; it turns into one of the above.
 
 Postponing a task doesn't change the day it was scheduled for. A Sunday task
@@ -66,7 +70,7 @@ Todoist may bring it back to that day; ticking it again there doesn't count
 twice.
 
 The completion rate counts late as done and shows the split, e.g.
-`80% (6 on time / 2 late / 2 failed)`. A late result keeps a streak going;
+`80% (6/2/2)` for 6 on time, 2 late and 2 failed. A late result keeps a streak going;
 only a failure breaks it. Days with no occurrence don't count.
 
 The occurrence days come from the task's repeat text. The script understands
@@ -86,8 +90,10 @@ ignored.
 
 Todoist doesn't record which occurrence is still open, so the per-day results,
 the open occurrence, the time of the last check and the day of the last
-completion are stored in the backtick line at the end of the stats comment. Don't edit that line. If you delete the
-comment, tracking starts over.
+completion are stored in the stats comment itself: in the link behind the 📊
+(the link leads to this repository), or in the backtick line at the end of a
+detailed comment. Don't edit them. If you delete the comment, tracking starts
+over.
 
 ## Scheduling
 
