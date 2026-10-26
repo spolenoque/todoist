@@ -26,6 +26,7 @@ or on the last line of a detailed comment. Run the script at least once a day.
 Usage:
   TODOIST_API_TOKEN=... python3 habit_tracker.py [--dry-run] [--label track]
                                                  [--task ID_OR_LINK] [--rebuild]
+  TODOIST_API_TOKEN_LU=... python3 habit_tracker.py --account lu [...]
 """
 
 from __future__ import annotations
@@ -86,6 +87,22 @@ MONTHS = {
     )
     for name in names
 }
+# Russian repeat text, translated into the English forms the parser reads.
+RUSSIAN_PHRASES = {
+    r"будний день|будни": "weekday", r"рабочий день": "workday", r"выходные": "weekend",
+    r"через день": "every other day", r"ежедневно": "daily", r"еженедельно": "weekly",
+    r"ежемесячно": "monthly", r"ежегодно": "yearly",
+    r"(?:в|во) (?=\d)": "at ", r"(?:начиная )?с (?=\d)": "starting ", r"до (?=\d)": "until ",
+}
+RUSSIAN_WORDS = {
+    "every": "каждый каждая каждое каждую каждые",
+    "day": "день", "days": "дня дней", "week": "неделя неделю", "weeks": "недели недель",
+    "month": "месяц", "months": "месяца месяцев", "year": "год", "years": "года лет",
+    "morning": "утро", "evening": "вечер", "on": "в во", "and": "и",
+    "mon": "понедельник пн", "tue": "вторник вт", "wed": "среда среду ср", "thu": "четверг чт",
+    "fri": "пятница пятницу пт", "sat": "суббота субботу сб", "sun": "воскресенье вс",
+}
+RUSSIAN_WORDS = {ru: en for en, words in RUSSIAN_WORDS.items() for ru in words.split()}
 ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "last": -1}
 ALL_DAYS = frozenset(range(7))
 WORKDAYS = frozenset(range(5))
@@ -103,6 +120,7 @@ class Event(NamedTuple):
 class Todoist:
     def __init__(self, token: str):
         self.token = token
+        self._user = None
 
     def _request(self, method, path, params=None, body=None, retries=3):
         url = f"{API_URL}/{path}"
@@ -135,8 +153,16 @@ class Todoist:
                 return
             params["cursor"] = page["next_cursor"]
 
+    def user(self) -> dict:
+        if self._user is None:
+            self._user = self._request("GET", "user")
+        return self._user
+
+    def user_id(self) -> str:
+        return self.user()["id"]
+
     def user_timezone(self) -> str | None:
-        return (self._request("GET", "user").get("tz_info") or {}).get("timezone")
+        return (self.user().get("tz_info") or {}).get("timezone")
 
     def tasks_with_label(self, label: str) -> list[dict]:
         return list(self._paginate("tasks", {"label": label, "limit": 200}))
@@ -328,8 +354,13 @@ def parse_schedule(text: str) -> Schedule | None:
     "every day at 8am", "every! 3 days", "every other monday",
     "every mon, wed, fri", "every 2 weeks on tue", "every 15th",
     "every 2nd monday", "every last sun feb, last sun aug", "every jan 1".
+    The simple Russian forms work too: "каждый день", "каждые 2 недели во вт".
     """
     s = text.lower().strip()
+    if re.search(r"[а-яё]", s):
+        for phrase, english in RUSSIAN_PHRASES.items():
+            s = re.sub(rf"\b{phrase}", english, s)
+        s = re.sub(r"[а-яё]+", lambda m: RUSSIAN_WORDS.get(m[0], m[0]), s)
     s = re.sub(r"^ev(?:ery)?!?(?=\s)", "every", s)
     s = re.split(r"\s+(?:at|starting|from|until|ending|for)\s", s)[0]
     s = re.sub(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b", "", s)
@@ -623,6 +654,12 @@ def is_tracked(task: dict, label: str) -> bool:
     return label.lower() in labels and bool((task.get("due") or {}).get("is_recurring"))
 
 
+def created_by(task: dict, user_id: str) -> bool:
+    """Tasks in shared projects show up for every member. Only the account that
+    created a task tracks it, so each stats comment has one writer."""
+    return task.get("added_by_uid") in (None, user_id)
+
+
 def task_id_from(value: str) -> str:
     """A task ID, or the ID at the end of a task link (…/app/task/some-title-ID)."""
     path = urllib.parse.urlparse(value.strip()).path
@@ -632,14 +669,21 @@ def task_id_from(value: str) -> str:
 def run(
     api, label: str, now: datetime, dry_run: bool = False, task_id: str | None = None, rebuild: bool = False
 ) -> int:
+    user_id = api.user_id()
+    others = 0
     if task_id:
         task = api.task(task_id)
         if not is_tracked(task, label):
             print(f"error: {task['content']} ({task_id}) is not a recurring @{label} task", file=sys.stderr)
             return 1
+        if not created_by(task, user_id):
+            print(f"error: {task['content']} ({task_id}) is tracked by the account that created it", file=sys.stderr)
+            return 1
         tasks = [task]
     else:
-        tasks = [t for t in api.tasks_with_label(label) if is_tracked(t, label)]
+        tracked = [t for t in api.tasks_with_label(label) if is_tracked(t, label)]
+        tasks = [t for t in tracked if created_by(t, user_id)]
+        others = len(tracked) - len(tasks)
     errors = 0
     for task in tasks:
         try:
@@ -649,7 +693,10 @@ def run(
         except Exception as e:  # keep going so one bad task doesn't block the rest
             errors += 1
             print(f"error: {task['content']} ({task['id']}): {e}", file=sys.stderr)
-    print(f"{len(tasks) - errors}/{len(tasks)} recurring @{label} tasks processed")
+    summary = f"{len(tasks) - errors}/{len(tasks)} recurring @{label} tasks processed"
+    if others:
+        summary += f", {others} left to the accounts that created them"
+    print(summary)
     return 1 if errors else 0
 
 
@@ -673,6 +720,9 @@ def main() -> int:
     load_dotenv(Path(__file__).with_name(".env"))
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--label", default=os.environ.get("HABIT_LABEL", "track"))
+    parser.add_argument(
+        "--account", metavar="NAME", help="use the token in TODOIST_API_TOKEN_NAME instead of TODOIST_API_TOKEN"
+    )
     parser.add_argument("--dry-run", action="store_true", help="print comments instead of writing them")
     parser.add_argument("--task", metavar="ID_OR_LINK", help="update only this task (its ID or Todoist link)")
     parser.add_argument(
@@ -682,9 +732,10 @@ def main() -> int:
     if args.rebuild and not args.task:
         parser.error("--rebuild replaces a task's history, so it needs --task to name the task")
 
-    token = os.environ.get("TODOIST_API_TOKEN")
+    token_var = f"TODOIST_API_TOKEN_{args.account.upper()}" if args.account else "TODOIST_API_TOKEN"
+    token = os.environ.get(token_var)
     if not token:
-        print("TODOIST_API_TOKEN is not set (env var or .env next to this script)", file=sys.stderr)
+        print(f"{token_var} is not set (env var or .env next to this script)", file=sys.stderr)
         return 2
     api = Todoist(token)
     try:

@@ -47,6 +47,9 @@ class FakeTodoist:
         self.comment_store = {}  # task_id -> [comment]
         self.writes = 0
 
+    def user_id(self):
+        return "me"
+
     def tasks_with_label(self, label):
         return [t for t in self.tasks if label in t.get("labels", [])]
 
@@ -105,6 +108,7 @@ def habit(due: str, task_id="1", labels=("track",), recurring=True, every="every
         "content": f"habit {task_id}",
         "labels": list(labels),
         "added_at": "2026-01-01T00:00:00Z",
+        "added_by_uid": "me",
         "due": {"date": due, "is_recurring": recurring, "string": every},
     }
 
@@ -142,6 +146,17 @@ class ScheduleTest(unittest.TestCase):
             "every 12 hours": None,
             "hourly": None,
             "every 2nd tuesday of the quarter": None,
+            "каждый день": Schedule("day"),
+            "каждый день в 9:00": Schedule("day"),
+            "каждые 3 дня": Schedule("day", 3),
+            "через день": Schedule("day", 2),
+            "каждую среду": Schedule("week", weekdays=frozenset({2})),
+            "каждый пн, ср и пт": Schedule("week", weekdays=frozenset({0, 2, 4})),
+            "каждые 2 недели во вторник": Schedule("week", 2, frozenset({1})),
+            "каждый будний день": Schedule("week", weekdays=WORKDAYS),
+            "каждые выходные": Schedule("week", weekdays=frozenset({5, 6})),
+            "каждый месяц": Schedule("month"),
+            "каждое 15 число": None,
         }
         for text, expected in cases.items():
             with self.subTest(text):
@@ -535,6 +550,19 @@ class RunTest(unittest.TestCase):
             self.assertEqual(run(api, "track", at("2026-10-16"), task_id="1"), 1)
             self.assertEqual(run(api, "track", at("2026-10-16"), task_id="2"), 1)
         self.assertEqual(api.comment_store, {})
+
+    def test_shared_tasks_belong_to_the_account_that_created_them(self):
+        theirs = habit("2026-10-16", "2")
+        theirs["added_by_uid"] = "someone else"
+        api = FakeTodoist([habit("2026-10-16", "1"), theirs])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(run(api, "track", at("2026-10-16")), 0)
+        self.assertEqual(list(api.comment_store), ["1"])
+        self.assertIn("1/1 recurring @track tasks processed, 1 left to the accounts that created them", out.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(run(api, "track", at("2026-10-16"), task_id="2"), 1)
+        self.assertEqual(list(api.comment_store), ["1"])
 
     def test_task_id_from_id_or_link(self):
         for value in (

@@ -43,6 +43,17 @@ keeps the full history on paid plans and only the last 7 days on the free one.
 `HABIT_TZ=Europe/Warsaw` overrides the timezone; by default it comes from your
 Todoist account settings.
 
+## More accounts
+
+Each account has its own token. `--account NAME` reads it from
+`TODOIST_API_TOKEN_NAME` instead of `TODOIST_API_TOKEN`, e.g.
+`TODOIST_API_TOKEN_LU` for `--account lu`; put it in `.env` for local runs.
+Each run uses that account's timezone and `@track` label.
+
+Tasks in shared projects show up for every member, so an account only tracks
+the tasks it created; the others are left to their creators' runs. A task
+someone else completes still counts for it.
+
 ## How it counts
 
 Every occurrence of the task gets one result, recorded on the day it was
@@ -78,7 +89,10 @@ the common English forms: `every day`, `every other day`, `every 3 days`,
 `every monday`, `every mon, wed, fri`, `every other monday`,
 `every 2 weeks on tue`, `every weekday`, `every 3 months`, `every 15th`,
 `every last day`, `every 2nd monday`, `every last workday`, `every jan 1`,
-`every last sun feb, last sun apr, …`. Times and `starting`/`until` parts are
+`every last sun feb, last sun apr, …`, and the simple Russian ones:
+`каждый день`, `каждые 3 дня`, `через день`, `каждую среду`,
+`каждый пн, ср и пт`, `каждые 2 недели во вт`, `каждый будний день`,
+`каждые выходные`, `каждый месяц`. Times and `starting`/`until` parts are
 ignored. Hourly repeats (`every 12 hours`) aren't supported. If it can't read
 the repeat text, it can't know when the next
 occurrence is: an occurrence then fails the day after it was due, and there is
@@ -103,7 +117,8 @@ misses as overdue before you complete or reschedule them.
 It runs nightly on GitHub Actions (`.github/workflows/habit-tracker.yml`) at
 23:15 UTC, which is 00:15/01:15 in Madrid. To set it up, add your token as a
 repository secret named `TODOIST_API_TOKEN` (Settings → Secrets and variables
-→ Actions). To run it by hand, open Actions → Habit tracker → Run workflow, and
+→ Actions). Each extra account gets its own secret and its own step in the
+workflow, like the one for `lu`. To run it by hand, open Actions → Habit tracker → Run workflow, and
 tick "dry run" to only print the comments.
 
 If your timezone is far from UTC+1/+2, change the cron line so the run lands
