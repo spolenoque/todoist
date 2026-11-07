@@ -77,6 +77,11 @@ class FakeTodoist:
                 if c["id"] == comment_id:
                     c["content"] = content
 
+    def delete_comment(self, comment_id):
+        self.writes += 1
+        for task_id, comments in self.comment_store.items():
+            self.comment_store[task_id] = [c for c in comments if c["id"] != comment_id]
+
     def complete(self, task, local_dt: datetime, next_due: str):
         """Complete the open occurrence; like Todoist, move the task to `next_due`."""
         occurrence = d(task["due"]["date"][:10])
@@ -198,7 +203,7 @@ class StatsTest(unittest.TestCase):
     def test_render(self):
         ledger = self.ledger("+~.-++.~++-+")
         lines = render(ledger, at("2026-10-12")).splitlines()
-        self.assertEqual(lines[0], f"[📊](https://github.com/spolenoque/todoist#{ledger.serialize()}) **Habit stats**")
+        self.assertEqual(lines[0], f"[📊](habit://{ledger.serialize()}) **Habit stats**")
         self.assertEqual(
             lines[1:],
             [
@@ -523,7 +528,7 @@ class RunTest(unittest.TestCase):
         run(api, "track", at("2026-10-22", 1))
         self.assertEqual(api.comment_store["1"][0]["content"], "my own note")
         self.assertEqual(api.log("1"), "-+.")
-        self.assertIn("#habit-tracker:v4:", api.comment_store["1"][1]["content"])
+        self.assertIn("habit://habit-tracker:v4:", api.comment_store["1"][1]["content"])
 
     def test_tasks_named_test_get_the_detailed_comment(self):
         short, detailed = habit("2026-10-20", "1"), habit("2026-10-20", "2")
@@ -573,6 +578,40 @@ class RunTest(unittest.TestCase):
         ):
             with self.subTest(value):
                 self.assertEqual(task_id_from(value), "6h3wcWJ666fWX7rg")
+
+    def comment_with_a_preview_card(self, api):
+        """Turn the task's comment into one with a web link, as they used to be."""
+        comment = api.comment_store["1"][0]
+        comment["content"] = comment["content"].replace("habit://", "https://github.com/spolenoque/todoist#")
+        comment["file_attachment"] = {"url": "https://github.com/spolenoque/todoist"}
+        return comment
+
+    def test_a_comment_with_a_preview_card_is_replaced_and_keeps_its_history(self):
+        api = FakeTodoist([habit("2026-10-16")])
+        run(api, "track", at("2026-10-16"))
+        old = self.comment_with_a_preview_card(api)
+        since = api.ledger("1").since
+        run(api, "track", at("2026-10-18"))
+        comments = api.comment_store["1"]
+        self.assertEqual(len(comments), 1)
+        self.assertNotEqual(comments[0]["id"], old["id"])
+        self.assertNotIn("file_attachment", comments[0])
+        self.assertNotIn("https://", comments[0]["content"])
+        self.assertEqual(api.ledger("1").since, since)
+        self.assertEqual(api.log("1"), "--.")  # the 16th and 17th failed, the 18th is open
+
+    def test_the_old_comment_stays_if_the_new_one_cant_be_written(self):
+        api = FakeTodoist([habit("2026-10-16")])
+        run(api, "track", at("2026-10-16"))
+        old = self.comment_with_a_preview_card(api)
+
+        def broken(task_id, content):
+            raise RuntimeError("POST comments -> HTTP 500")
+
+        api.add_comment = broken
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(run(api, "track", at("2026-10-18")), 1)
+        self.assertEqual(api.comment_store["1"], [old])
 
     def test_dry_run_writes_nothing(self):
         api = FakeTodoist([habit("2026-10-16")])

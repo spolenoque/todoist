@@ -64,8 +64,9 @@ RECENT_RESULTS = 7
 # Tasks with this in their name get the detailed comment, with the data in view.
 DETAILED_NAME = "test"
 DETAILED_RECENT_RESULTS = 10
-# The short comment keeps its data in the link behind the 📊, which leads here.
-ABOUT_URL = "https://github.com/spolenoque/todoist"
+# The short comment keeps its data in the link behind the 📊. It isn't a web
+# link, because Todoist attaches a preview card to those.
+DATA_SCHEME = "habit://"
 SQUARES = {DONE: "🟩", LATE: "🟨", FAILED: "🟥"}
 OPEN_SQUARE = "⬜"  # the occurrence due now, not done yet
 
@@ -117,32 +118,40 @@ class Event(NamedTuple):
     due_at: datetime | None = None  # completed: the next due time; moved: the new one
 
 
+def http_json(method: str, url: str, headers: dict, data: bytes | None = None, retries: int = 3):
+    """Send a request and return its JSON response, retrying when rate
+    limited or on a server error."""
+    for attempt in range(retries):
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            retryable = e.code == 429 or e.code >= 500
+            if retryable and attempt < retries - 1:
+                time.sleep(int(e.headers.get("Retry-After") or 2 ** (attempt + 1)))
+                continue
+            detail = e.read().decode(errors="replace")[:300]
+            path = urllib.parse.urlparse(url).path
+            raise RuntimeError(f"{method} {path} -> HTTP {e.code}: {detail}") from e
+
+
 class Todoist:
     def __init__(self, token: str):
         self.token = token
         self._user = None
 
-    def _request(self, method, path, params=None, body=None, retries=3):
+    def _request(self, method, path, params=None, body=None):
         url = f"{API_URL}/{path}"
         if params:
             url += "?" + urllib.parse.urlencode(params)
-        data = json.dumps(body).encode() if body is not None else None
         headers = {"Authorization": f"Bearer {self.token}"}
-        if data is not None:
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        for attempt in range(retries):
-            req = urllib.request.Request(url, data=data, headers=headers, method=method)
-            try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    raw = resp.read()
-                    return json.loads(raw) if raw else None
-            except urllib.error.HTTPError as e:
-                retryable = e.code == 429 or e.code >= 500
-                if retryable and attempt < retries - 1:
-                    time.sleep(int(e.headers.get("Retry-After") or 2 ** (attempt + 1)))
-                    continue
-                detail = e.read().decode(errors="replace")[:300]
-                raise RuntimeError(f"{method} {path} -> HTTP {e.code}: {detail}") from e
+        return http_json(method, url, headers, data)
 
     def _paginate(self, path, params, key="results"):
         params = dict(params)
@@ -202,6 +211,9 @@ class Todoist:
 
     def update_comment(self, comment_id: str, content: str):
         self._request("POST", f"comments/{comment_id}", body={"content": content})
+
+    def delete_comment(self, comment_id: str):
+        self._request("DELETE", f"comments/{comment_id}")
 
 
 def parse_utc(value: str) -> datetime:
@@ -554,7 +566,7 @@ def render(ledger: Ledger, now: datetime, detailed: bool = False) -> str:
         title = "📊 **Habit stats**"
         footer = [f"_Updated {now:%d %b %Y %H:%M}_ `{ledger.serialize()}`"]
     else:
-        title = f"[📊]({ABOUT_URL}#{ledger.serialize()}) **Habit stats**"
+        title = f"[📊]({DATA_SCHEME}{ledger.serialize()}) **Habit stats**"
         footer = []
     return "\n".join(
         [
@@ -642,6 +654,11 @@ def update_task(api, task: dict, now: datetime, dry_run: bool, rebuild: bool = F
     content = render(ledger, now, detailed=DETAILED_NAME in task["content"].lower())
     if dry_run:
         print(f"--- {task['content']} ({task['id']})\n{content}\n")
+    elif comment and comment.get("file_attachment"):
+        # Editing the web link out of a comment leaves its preview card behind,
+        # so replace the comment. The old one holds the history: it goes last.
+        api.add_comment(task["id"], content)
+        api.delete_comment(comment["id"])
     elif comment:
         api.update_comment(comment["id"], content)
     else:

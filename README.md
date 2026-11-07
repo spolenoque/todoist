@@ -105,9 +105,9 @@ ignored.
 Todoist doesn't record which occurrence is still open, so the per-day results,
 the open occurrence, the time of the last check and the day of the last
 completion are stored in the stats comment itself: in the link behind the 📊
-(the link leads to this repository), or in the backtick line at the end of a
-detailed comment. Don't edit them. If you delete the comment, tracking starts
-over.
+(it leads nowhere, because Todoist adds a preview card to web links), or in the
+backtick line at the end of a detailed comment. Don't edit them. If you delete
+the comment, tracking starts over.
 
 ## Scheduling
 
@@ -127,6 +127,68 @@ just after your local midnight.
 Recurring completions are read from Todoist's activity log. On the free plan
 that log only goes back 7 days, so completions made during a gap of more than
 a week between runs won't be counted.
+
+## Calories from Fitbit
+
+`fitbit_calories.py` keeps one more comment on a task, with the calories your
+Fitbit counted on each of the last 7 full days:
+
+```
+🔥 Calories burned
+Mon 2 Nov: 2,412 kcal
+7-day average: 2,315 kcal
+Last 7 days: 2,180 · 2,301 · 2,455 · 1,998 · 2,612 · 2,250 · 2,412
+```
+
+These are total calories, resting plus active, the number the Google Health
+app shows. They come from the Google Health API, which replaced the Fitbit Web
+API in 2026. Every run reads all 7 days again, so a day that hadn't finished
+syncing from the phone yet is corrected on the next run. A `—` is a day
+without data; it doesn't count towards the average.
+
+### Setup
+
+You need a Google Cloud app of your own. It only has to work for you, so it
+doesn't need Google's verification.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create a
+   project and enable the
+   [Google Health API](https://console.cloud.google.com/apis/library/health.googleapis.com).
+2. Open Google Auth Platform and set it up as an **External** app. Under
+   **Data Access**, add the scope
+   `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly`.
+   Under **Audience**, add your Google account as a test user, then click
+   **Publish app**. While the app is in Testing, Google signs it out every 7
+   days.
+3. Under **Clients**, create a client of type **Desktop app**. Put its ID and
+   secret in `.env`:
+   ```
+   GOOGLE_CLIENT_ID=….apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=…
+   ```
+4. Sign in with the Google account you use in the Google Health app:
+   ```
+   python3 fitbit_calories.py --authorize
+   ```
+   Google warns that the app isn't verified. It's yours, so click
+   **Advanced → Go to …** and allow access. The script prints yesterday's
+   calories to show it works, and a `GOOGLE_REFRESH_TOKEN=…` line for `.env`.
+5. Preview, then write the comment:
+   ```
+   python3 fitbit_calories.py --task ID_OR_LINK --dry-run
+   python3 fitbit_calories.py --task ID_OR_LINK
+   ```
+   `CALORIES_TASK` in `.env` saves typing `--task`.
+
+The nightly workflow runs it after the habit stats, for the task in
+`.github/workflows/habit-tracker.yml`. Add `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN` as repository secrets. If
+the refresh token stops working (you revoked access, or the app was still in
+Testing), the run says so; run `--authorize` again and update the secret.
+
+This repository's workflow logs are public, so a run doesn't print the
+calories and the workflow's dry run skips this step. See
+[PRIVACY.md](PRIVACY.md).
 
 ## Tests
 
