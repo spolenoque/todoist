@@ -140,7 +140,7 @@ over 3,500 kcal:
 Tue 10 Nov, by 23:05: 3,612 kcal
 Goal: over 3,500 kcal ✅
 7-day average: 3,204 kcal
-Last 7 days: 27 49 27 28 31 40 23
+Last 7 days: 27, 49, 27, 28, 31, 40, 23
 ```
 
 The last 7 days are in hundreds of kcal, and the days over the goal are in
