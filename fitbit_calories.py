@@ -8,10 +8,11 @@ the last 7 full days:
   🔥 Calories burned
   Tue 10 Nov, by 23:05: 3,612 kcal
   Goal: over 3,500 kcal ✅
-  7-day average: 2,315 kcal
-  Last 7 days: 2,180 · 2,301 · 2,455 · 1,998 · 2,612 · 2,250 · 2,412
+  7-day average: 3,204 kcal
+  Last 7 days: 27 49 27 28 31 40 23
 
-With --complete-above, it also marks the task done for today once today's
+The last 7 days are in hundreds of kcal, in bold when over the goal. With
+--complete-above, it also marks the task done for today once today's
 calories are over that many, unless someone completed it today already (even
 if they took that back). Every run reads all the days again, so a day that
 hadn't finished syncing from the phone yet is corrected on the next run.
@@ -115,6 +116,14 @@ def kcal(value: float | None) -> str:
     return f"{round(value):,}" if value else "—"
 
 
+def hundreds(value: float | None, goal: int | None = None) -> str:
+    """A day's calories in hundreds (2,657 kcal is 27), in bold when over the goal."""
+    if not value:
+        return "—"
+    short = str(int(value / 100 + 0.5))
+    return f"**{short}**" if goal and value > goal else short
+
+
 def render(calories: dict[date, float], now: datetime, goal: int | None = None) -> str:
     today = now.date()
     days = [today - timedelta(days=k) for k in range(DAYS, 0, -1)]  # the full days before today
@@ -132,7 +141,7 @@ def render(calories: dict[date, float], now: datetime, goal: int | None = None) 
         lines.append(f"Goal: over {goal:,} kcal{progress}")
     lines += [
         f"{DAYS}-day average: {average}",
-        f"Last {DAYS} days: " + " · ".join(kcal(v) for v in values),
+        f"Last {DAYS} days: " + " ".join(hundreds(v, goal) for v in values),
     ]
     return "\n".join(lines)
 

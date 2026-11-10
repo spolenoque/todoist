@@ -98,10 +98,18 @@ class RenderTest(unittest.TestCase):
                     "Tue 10 Nov, by 23:05: **3,612 kcal**",
                     "Goal: over 3,500 kcal ✅",
                     "7-day average: 2,315 kcal",
-                    "Last 7 days: 2,180 · 2,301 · 2,455 · 1,998 · 2,612 · 2,250 · 2,412",
+                    "Last 7 days: 22 23 25 20 26 23 24",
                 ]
             ),
         )
+
+    def test_last_days_in_hundreds_with_the_days_over_the_goal_in_bold(self):
+        data = calories(2657, 4915, 2739, 2776, 3051, 3990, 2298)
+        self.assertIn("Last 7 days: 27 **49** 27 28 31 **40** 23", render(data, NOW, GOAL))
+        self.assertIn("Last 7 days: 27 49 27 28 31 40 23", render(data, NOW))  # no goal, no bold
+
+    def test_exactly_the_goal_is_not_a_hit_and_halves_round_up(self):
+        self.assertIn("Last 7 days: — — — — 35 26 —", render(calories(3500, 2550, None), NOW, GOAL))
 
     def test_goal_not_reached_yet(self):
         self.assertIn("Goal: over 3,500 kcal, 288 to go", render(calories(2000, today=3212.4), NOW, GOAL))
@@ -118,7 +126,7 @@ class RenderTest(unittest.TestCase):
         self.assertIn("Tue 10 Nov, by 23:05: — (no data yet)", content)
         self.assertIn("Goal: over 3,500 kcal, 3,500 to go", content)
         self.assertIn("7-day average: 2,500 kcal", content)
-        self.assertIn("Last 7 days: 2,000 · — · 3,000 · — · — · — · —", content)
+        self.assertIn("Last 7 days: 20 — 30 — — — —", content)
 
     def test_no_data_at_all(self):
         self.assertIn("7-day average: —", render({}, NOW))
