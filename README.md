@@ -131,20 +131,29 @@ a week between runs won't be counted.
 ## Calories from Fitbit
 
 `fitbit_calories.py` keeps one more comment on a task, with the calories your
-Fitbit counted on each of the last 7 full days:
+Fitbit counted today so far and on each of the last 7 full days. With
+`--complete-above 3500`, it also marks the task done for today once today is
+over 3,500 kcal:
 
 ```
 🔥 Calories burned
-Mon 2 Nov: 2,412 kcal
+Tue 10 Nov, by 23:05: 3,612 kcal
+Goal: over 3,500 kcal ✅
 7-day average: 2,315 kcal
 Last 7 days: 2,180 · 2,301 · 2,455 · 1,998 · 2,612 · 2,250 · 2,412
 ```
 
 These are total calories, resting plus active, the number the Google Health
 app shows. They come from the Google Health API, which replaced the Fitbit Web
-API in 2026. Every run reads all 7 days again, so a day that hadn't finished
+API in 2026. Every run reads all the days again, so a day that hadn't finished
 syncing from the phone yet is corrected on the next run. A `—` is a day
 without data; it doesn't count towards the average.
+
+It only marks the task done while today's occurrence is open. It leaves the
+task alone when you've done it ahead, or when it was completed today already,
+by you or an earlier run. That includes a completion you took back, so undoing
+it in Todoist sticks. An overdue task counts for today, as if you'd ticked it
+yourself.
 
 ### Setup
 
@@ -171,8 +180,10 @@ doesn't need Google's verification.
    python3 fitbit_calories.py --authorize
    ```
    Google warns that the app isn't verified. It's yours, so click
-   **Advanced → Go to …** and allow access. The script prints yesterday's
-   calories to show it works, and a `GOOGLE_REFRESH_TOKEN=…` line for `.env`.
+   **Advanced → Go to …** and allow access. The script saves the token in
+   `.env`, and in the `GOOGLE_REFRESH_TOKEN` repository secret if the GitHub
+   CLI (`gh`) is signed in. Then it prints yesterday's calories to show it
+   works.
 5. Preview, then write the comment:
    ```
    python3 fitbit_calories.py --task ID_OR_LINK --dry-run
@@ -180,15 +191,22 @@ doesn't need Google's verification.
    ```
    `CALORIES_TASK` in `.env` saves typing `--task`.
 
-The nightly workflow runs it after the habit stats, for the task in
-`.github/workflows/habit-tracker.yml`. Add `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN` as repository secrets. If
-the refresh token stops working (you revoked access, or the app was still in
-Testing), the run says so; run `--authorize` again and update the secret.
+It runs on GitHub Actions from `.github/workflows/calories.yml`, every hour
+from 08:23 to 00:23 UTC (09:23 to 01:23 in Madrid in winter), at 23 minutes
+past because GitHub is busiest on the hour. Each run marks the task done once
+today is over the goal, so it's ticked within about an hour of getting there.
+GitHub starts scheduled runs late, lately by up to 7 hours, but with a run
+every hour one usually still lands in the last hours of the day. A run that
+starts after midnight checks the new day, and only refreshes the comment.
 
-This repository's workflow logs are public, so a run doesn't print the
-calories and the workflow's dry run skips this step. See
-[PRIVACY.md](PRIVACY.md).
+Add `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN` as
+repository secrets. If the refresh token stops working (you revoked access, or
+the app was still in Testing), the runs say so; run `--authorize` again,
+which updates `.env` and the secret. While the app is in Testing, that's every
+7 days; `--authorize` tells you when the new token runs out.
+
+This repository's workflow logs are public, so a run prints neither the
+calories nor whether it marked the task done. See [PRIVACY.md](PRIVACY.md).
 
 ## Tests
 

@@ -41,15 +41,3 @@ jobs:
         env:
           TODOIST_API_TOKEN_LU: ${{ secrets.TODOIST_API_TOKEN_LU }}
         run: python3 habit_tracker.py --account lu ${{ inputs.dry_run && '--dry-run' || '' }}
-
-      # Yesterday's calories from the Fitbit, into "Физически поактивничать".
-      # A dry run would print them and this repository's logs are public, so
-      # it skips this step.
-      - name: Load calories burned
-        if: ${{ !cancelled() && steps.tests.outcome == 'success' && !inputs.dry_run }}
-        env:
-          TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-        run: python3 fitbit_calories.py --task 6hWjfQ7h6HXM5hc8

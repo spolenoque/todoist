@@ -2,20 +2,23 @@
 """Calories burned, from a Fitbit through the Google Health API.
 
 Keeps one comment on a Todoist task up to date with the total calories burned
-(basal plus active, as Google Health shows them) on each of the last 7 full
-days:
+(basal plus active, as Google Health shows them) today so far and on each of
+the last 7 full days:
 
   🔥 Calories burned
-  Mon 2 Nov: 2,412 kcal
+  Tue 10 Nov, by 23:05: 3,612 kcal
+  Goal: over 3,500 kcal ✅
   7-day average: 2,315 kcal
   Last 7 days: 2,180 · 2,301 · 2,455 · 1,998 · 2,612 · 2,250 · 2,412
 
-Every run reads all 7 days again, so a day that hadn't finished syncing from
-the phone yet is corrected on the next run.
+With --complete-above, it also marks the task done for today once today's
+calories are over that many, unless someone completed it today already (even
+if they took that back). Every run reads all the days again, so a day that
+hadn't finished syncing from the phone yet is corrected on the next run.
 
 Usage:
   python3 fitbit_calories.py --authorize             # once: sign in to Google
-  python3 fitbit_calories.py --task ID_OR_LINK [--dry-run]
+  python3 fitbit_calories.py --task ID_OR_LINK [--complete-above KCAL] [--dry-run]
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import hashlib
 import json
 import os
 import secrets
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -34,13 +38,14 @@ from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from habit_tracker import Todoist, http_json, load_dotenv, resolve_timezone, task_id_from
+from habit_tracker import Todoist, due_day, http_json, load_dotenv, resolve_timezone, task_id_from
 
 HEALTH_URL = "https://health.googleapis.com/v4"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly"
 DAYS = 7  # total-calories rollups cover at most 14 days per request
+ENV_FILE = Path(__file__).with_name(".env")
 # Also how the script finds its comment. No links: Todoist attaches a preview
 # card to them.
 TITLE = "🔥 **Calories burned**"
@@ -110,32 +115,55 @@ def kcal(value: float | None) -> str:
     return f"{round(value):,}" if value else "—"
 
 
-def render(calories: dict[date, float], last: date) -> str:
-    days = [last - timedelta(days=k) for k in range(DAYS - 1, -1, -1)]
+def render(calories: dict[date, float], now: datetime, goal: int | None = None) -> str:
+    today = now.date()
+    days = [today - timedelta(days=k) for k in range(DAYS, 0, -1)]  # the full days before today
     values = [calories.get(day) for day in days]
     known = [v for v in values if v]
     average = f"{kcal(sum(known) / len(known))} kcal" if known else "—"
-    latest = f"**{kcal(values[-1])} kcal**" if values[-1] else "— (no data yet)"
-    return "\n".join(
-        [
-            TITLE,
-            f"{last:%a} {last.day} {last:%b}: {latest}",
-            f"{DAYS}-day average: {average}",
-            f"Last {DAYS} days: " + " · ".join(kcal(v) for v in values),
-        ]
-    )
+    so_far = calories.get(today) or 0
+    lines = [
+        TITLE,
+        f"{today:%a} {today.day} {today:%b}, by {now:%H:%M}: "
+        + (f"**{kcal(so_far)} kcal**" if so_far else "— (no data yet)"),
+    ]
+    if goal:
+        progress = " ✅" if so_far > goal else f", {round(goal - so_far):,} to go"
+        lines.append(f"Goal: over {goal:,} kcal{progress}")
+    lines += [
+        f"{DAYS}-day average: {average}",
+        f"Last {DAYS} days: " + " · ".join(kcal(v) for v in values),
+    ]
+    return "\n".join(lines)
 
 
-def update(api, health, task_id: str, now: datetime, dry_run: bool = False) -> str:
-    """Write the calories of the last full days into the task's comment."""
+def open_today(api, task: dict, now: datetime) -> bool:
+    """The task has an occurrence due today or earlier, and nobody completed
+    it today: not an earlier run, and not you, even if you took it back."""
+    tz, today = now.tzinfo, now.date()
+    if not task.get("due") or due_day(task["due"], tz) > today:
+        return False
+    events = api.events(task["id"], today - timedelta(days=1))
+    return not any(e.kind == "completed" and e.at.astimezone(tz).date() == today for e in events)
+
+
+def update(api, health, task_id: str, now: datetime, dry_run: bool = False, goal: int | None = None) -> str:
+    """Write today's calories so far and those of the last full days into the
+    task's comment. With a `goal`, mark the task done for today once today's
+    calories are over it."""
     task = api.task(task_id)
-    last = now.date() - timedelta(days=1)
-    calories = health.daily_calories(last - timedelta(days=DAYS - 1), last)
-    content = render(calories, last)
+    today = now.date()
+    calories = health.daily_calories(today - timedelta(days=DAYS), today)
+    content = render(calories, now, goal)
+    complete = bool(goal) and (calories.get(today) or 0) > goal and open_today(api, task, now)
     ours = [c for c in api.comments(task_id) if c.get("content", "").startswith(TITLE)]
     if dry_run:
         print(f"--- {task['content']} ({task_id})\n{content}\n")
+        if complete:
+            print("It would be marked done for today.\n")
         return content
+    if complete:
+        api.close_task(task_id)
     if ours:
         api.update_comment(ours[-1]["id"], content)
     else:
@@ -145,8 +173,35 @@ def update(api, health, task_id: str, now: datetime, dry_run: bool = False) -> s
     return content
 
 
-def authorize(client_id: str, client_secret: str) -> str:
-    """Sign in to Google in the browser and return a refresh token."""
+def save_to_env(path: Path, name: str, value: str):
+    """Set `name` in the .env file, keeping its other lines."""
+    lines = path.read_text().splitlines() if path.is_file() else []
+    line = f"{name}={value}"
+    for i, existing in enumerate(lines):
+        if existing.partition("=")[0].strip() == name:
+            lines[i] = line
+            break
+    else:
+        lines.append(line)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def save_to_github(name: str, value: str) -> bool:
+    """Set the repository secret with the GitHub CLI, if it's installed and
+    signed in. The value goes in through stdin, so it's never shown."""
+    try:
+        subprocess.run(
+            ["gh", "secret", "set", name], input=value, text=True,
+            capture_output=True, check=True, cwd=Path(__file__).parent,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
+def authorize(client_id: str, client_secret: str) -> tuple[str, int | None]:
+    """Sign in to Google in the browser. Returns a refresh token, and the
+    seconds until Google signs it out if it does (the app is in Testing)."""
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     state = secrets.token_urlsafe(16)
@@ -211,18 +266,25 @@ def authorize(client_id: str, client_secret: str) -> str:
     granted = tokens.get("scope", "").split()
     if SCOPE not in granted:
         raise RuntimeError("the activity and fitness permission wasn't granted; tick it on Google's consent screen")
-    return tokens["refresh_token"]
+    return tokens["refresh_token"], tokens.get("refresh_token_expires_in")
 
 
 def main() -> int:
-    load_dotenv(Path(__file__).with_name(".env"))
+    load_dotenv(ENV_FILE)
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
         "--task", metavar="ID_OR_LINK", default=os.environ.get("CALORIES_TASK"),
         help="the task to keep the comment on (its ID or Todoist link; default: CALORIES_TASK)",
     )
+    parser.add_argument(
+        "--complete-above", metavar="KCAL", type=int,
+        help="mark the task done for today once today's calories are over this many",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the comment instead of writing it")
-    parser.add_argument("--authorize", action="store_true", help="sign in to Google and print a refresh token")
+    parser.add_argument(
+        "--authorize", action="store_true",
+        help="sign in to Google, and save the token in .env and the GitHub secret",
+    )
     args = parser.parse_args()
 
     missing = [v for v in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET") if not os.environ.get(v)]
@@ -237,17 +299,27 @@ def main() -> int:
 
     try:
         if args.authorize:
-            refresh_token = authorize(client_id, client_secret)
+            refresh_token, expires_in = authorize(client_id, client_secret)
+            # Saved before anything else can fail, so the sign-in isn't wasted.
+            save_to_env(ENV_FILE, "GOOGLE_REFRESH_TOKEN", refresh_token)
+            if save_to_github("GOOGLE_REFRESH_TOKEN", refresh_token):
+                print("Signed in. The new token is saved in .env and in the GitHub secret.")
+            else:
+                print(
+                    "Signed in. The new token is saved in .env, but not on GitHub: the GitHub CLI isn't\n"
+                    "installed or signed in. Copy the GOOGLE_REFRESH_TOKEN value from .env into the secret."
+                )
+            if expires_in:
+                expiry = datetime.now() + timedelta(seconds=expires_in)
+                print(f"Google signs it out on {expiry:%a %d %b at %H:%M}, as the app is still in Testing.")
             yesterday = date.today() - timedelta(days=1)
             calories = GoogleHealth(client_id, client_secret, refresh_token).daily_calories(yesterday, yesterday)
-            print(f"Signed in. Calories burned yesterday: {kcal(calories.get(yesterday))} kcal\n")
-            print("Add this line to .env, and the value as the GOOGLE_REFRESH_TOKEN secret on GitHub:\n")
-            print(f"GOOGLE_REFRESH_TOKEN={refresh_token}")
+            print(f"Calories burned yesterday: {kcal(calories.get(yesterday))} kcal")
             return 0
         api = Todoist(os.environ["TODOIST_API_TOKEN"])
         health = GoogleHealth(client_id, client_secret, os.environ["GOOGLE_REFRESH_TOKEN"])
         now = datetime.now(resolve_timezone(api))
-        update(api, health, task_id_from(args.task), now, args.dry_run)
+        update(api, health, task_id_from(args.task), now, args.dry_run, args.complete_above)
         return 0
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)

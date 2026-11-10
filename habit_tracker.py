@@ -215,6 +215,10 @@ class Todoist:
     def delete_comment(self, comment_id: str):
         self._request("DELETE", f"comments/{comment_id}")
 
+    def close_task(self, task_id: str):
+        """Complete the task; a recurring one moves on to its next occurrence."""
+        self._request("POST", f"tasks/{task_id}/close")
+
 
 def parse_utc(value: str) -> datetime:
     # Python 3.9's fromisoformat() does not accept a trailing "Z".

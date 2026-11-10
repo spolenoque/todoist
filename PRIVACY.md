@@ -14,8 +14,10 @@ but the script doesn't request it.
 ## Where the data goes
 
 The numbers are written into a comment on the owner's Todoist task, where
-Todoist stores them. They aren't sent anywhere else, and they aren't sold or
-shared. They're kept out of this repository's workflow logs, which are public.
+Todoist stores them. When the day's total is over the owner's goal, the script
+also marks that task done. The numbers aren't sent anywhere else, and they
+aren't sold or shared. They're kept out of this repository's workflow logs,
+which are public, and so is whether the task was marked done.
 
 The token that lets the script read the data is kept in a local `.env` file and
 in this repository's GitHub secrets. It's never committed to the repository.
