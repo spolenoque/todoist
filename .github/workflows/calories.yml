@@ -28,10 +28,10 @@ jobs:
 
       # The logs of this repository are public, so this prints neither the
       # calories nor whether the task was marked done.
-      - name: Load calories, mark "Физически поактивничать" done over 3,500 kcal
+      - name: Load calories, mark "Физически поактивничать" done over 3,200 kcal
         env:
           TODOIST_API_TOKEN: ${{ secrets.TODOIST_API_TOKEN }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
-        run: python3 fitbit_calories.py --task 6hWjfQ7h6HXM5hc8 --complete-above 3500
+        run: python3 fitbit_calories.py --task 6hWjfQ7h6HXM5hc8 --complete-above 3200

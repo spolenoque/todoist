@@ -132,13 +132,13 @@ a week between runs won't be counted.
 
 `fitbit_calories.py` keeps one more comment on a task, with the calories your
 Fitbit counted today so far and on each of the last 7 full days. With
-`--complete-above 3500`, it also marks the task done for today once today is
-over 3,500 kcal:
+`--complete-above 3200`, it also marks the task done for today once today is
+over 3,200 kcal:
 
 ```
 🔥 Calories burned
 Tue 10 Nov, by 23:05: 3,612 kcal
-Goal: over 3,500 kcal ✅
+Goal: over 3,200 kcal ✅
 7-day average: 3,204 kcal
 Last 7 days: 27, 49, 27, 28, 31, 40, 23
 ```
